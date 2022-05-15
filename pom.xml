@@ -4,8 +4,8 @@
 
 	<parent>
 		<groupId>com.globalmentor</groupId>
-		<artifactId>globalmentor-base</artifactId>
-		<version>0.7.0</version>
+		<artifactId>globalmentor-root</artifactId>
+		<version>0.8.10-SNAPSHOT</version>
 	</parent>
 
 	<groupId>com.jordial.datimprint</groupId>
@@ -59,7 +59,7 @@
 			<dependency>
 				<groupId>com.globalmentor</groupId>
 				<artifactId>globalmentor-application</artifactId>
-				<version>0.7.5</version>
+				<version>0.7.6-SNAPSHOT</version>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>
