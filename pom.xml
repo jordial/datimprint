@@ -44,6 +44,7 @@
 
 	<modules>
 		<module>cli</module>
+		<module>file</module>
 	</modules>
 
 	<dependencyManagement>
@@ -54,6 +55,12 @@
 				<version>8.6.0</version>
 				<type>pom</type>
 				<scope>import</scope>
+			</dependency>
+
+			<dependency>
+				<groupId>com.globalmentor</groupId>
+				<artifactId>globalmentor-core</artifactId>
+				<version>0.7.1-SNAPSHOT</version>
 			</dependency>
 
 			<dependency>

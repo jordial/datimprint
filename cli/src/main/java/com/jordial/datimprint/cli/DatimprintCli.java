@@ -39,7 +39,7 @@ import picocli.CommandLine.*;
  * Command-line interface for Datimprint.
  * @author Garret Wilson
  */
-@Command(name = "datimprint", description = "Jordial's command-line interface for data statistics, thumbprint, and verification")
+@Command(name = "datimprint", description = "Jordial's command-line interface for data statistics, fingerprint, and verification")
 public class DatimprintCli extends BaseCliApplication {
 
 	/**
