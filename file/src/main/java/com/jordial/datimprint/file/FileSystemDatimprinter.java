@@ -25,6 +25,7 @@ import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import javax.annotation.*;
@@ -52,14 +53,29 @@ public class FileSystemDatimprinter {
 	 * @throws IOException if there is a problem accessing the path in the file system.
 	 */
 	public PathImprint generateImprint(@Nonnull final Path path) throws IOException {
+		return generateImprint(path, imprint -> {});
+	}
+
+	/**
+	 * Generates an imprint of a single path.
+	 * @implSpec Symbolic links are followed.
+	 * @param path The path for which an imprint should be generated.
+	 * @param imprintConsumer The consumer that will receive all descendant path imprints, if any, followed by this path's imprint.
+	 * @return An imprint of the path.
+	 * @throws IOException if there is a problem accessing the path in the file system.
+	 */
+	public PathImprint generateImprint(@Nonnull final Path path, @Nonnull final Consumer<PathImprint> imprintConsumer) throws IOException {
+		final PathImprint imprint;
 		if(isRegularFile(path)) {
-			return generateImprint(path, throwingSupplier(() -> Files.readAttributes(path, BasicFileAttributes.class)),
+			imprint = generateImprint(path, throwingSupplier(() -> readAttributes(path, BasicFileAttributes.class)),
 					throwingSupplier(() -> Files.newInputStream(path)));
 		} else if(isDirectory(path)) {
 			throw new UnsupportedOperationException("Generating an imprint of a directory not yet supported."); //TODO implement directory imprint
 		} else {
 			throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
 		}
+		imprintConsumer.accept(imprint);
+		return imprint;
 	}
 
 	/**

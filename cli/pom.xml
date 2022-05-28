@@ -29,6 +29,11 @@
 		</dependency>
 
 		<dependency>
+			<groupId>com.jordial.datimprint</groupId>
+			<artifactId>datimprint-file</artifactId>
+		</dependency>
+
+		<dependency>
 			<groupId>com.github.dtmo.jfiglet</groupId>
 			<artifactId>jfiglet</artifactId>
 			<version>1.0.1</version>

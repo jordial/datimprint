@@ -20,6 +20,7 @@ import static org.fusesource.jansi.Ansi.*;
 
 import java.io.IOException;
 import java.nio.file.*;
+import java.util.Optional;
 
 import javax.annotation.*;
 
@@ -29,9 +30,10 @@ import org.slf4j.event.Level;
 
 import com.github.dtmo.jfiglet.*;
 import com.globalmentor.application.*;
+import com.globalmentor.java.OperatingSystem;
+import com.jordial.datimprint.file.*;
 
-import io.confound.config.Configuration;
-import io.confound.config.ConfigurationException;
+import io.confound.config.*;
 import io.confound.config.file.ResourcesConfigurationManager;
 import picocli.CommandLine.*;
 
@@ -83,19 +85,40 @@ public class DatimprintCli extends BaseCliApplication {
 
 	/**
 	 * Generates a data imprint of the indicated file or directory tree.
-	 * @param argData The file or base directory of the data for which an imprint should be generated.
+	 * @param argDataPath The file or base directory of the data for which an imprint should be generated.
 	 * @throws IOException If an I/O error occurs.
 	 */
 	@Command(description = "Generates a data imprint of the indicated file or directory tree.", mixinStandardHelpOptions = true)
 	public void generate(
-			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated.%nDefaults to the working directory, currently @|bold ${DEFAULT-VALUE}|@.", defaultValue = "${sys:user.dir}", arity = "0..1") @Nullable Path argData)
+			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated.%nDefaults to the working directory, currently @|bold ${DEFAULT-VALUE}|@.", defaultValue = "${sys:user.dir}", arity = "0..1") @Nonnull Optional<Path> argDataPath)
 			throws IOException {
 		final Logger logger = getLogger();
-		logger.info("Data: {}", argData);
 
 		logAppInfo();
 
+		final Path dataPath = argDataPath.orElseGet(OperatingSystem::getWorkingDirectory);
+		System.out.println(ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s`...".formatted(dataPath)).reset());
+		final FileSystemDatimprinter datimprinter = new FileSystemDatimprinter();
+		final PathImprint imprint = datimprinter.generateImprint(dataPath);
+		printImprintHeader();
+		printImprint(1, imprint);
+
+		//TODO add --output/-o CLI option for direct-to-file designation
+		//TODO default to UTF-8 for file output, else default charset for stdout, with explicit --charset/-c override
+
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Done.").reset());
+	}
+
+	protected void printImprintHeader() {
+		System.out.println("#\tMiniprint\tPath\tModified At\tContent Fingerprint\tComplete Fingerprint");
+		//TODO add "Levels" column with e.g. `+++` designation for number of levels below root
+	}
+
+	protected void printImprint(final long number, @Nonnull final PathImprint imprint) {
+		//TODO ensure no tab in path
+		System.out.println("%s\t%s\t%s\t%s\t%s\t%s".formatted(Long.toUnsignedString(number), imprint.fingerprint().toChecksum().substring(0, 8), imprint.path(),
+				imprint.modifiedAt(), imprint.contentFingerprint().toChecksum(), imprint.fingerprint().toChecksum()));
+		//TODO increment number
 	}
 
 }
