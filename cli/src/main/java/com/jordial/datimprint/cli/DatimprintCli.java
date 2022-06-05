@@ -24,6 +24,7 @@ import static org.zalando.fauxpas.FauxPas.*;
 import java.io.*;
 import java.nio.charset.*;
 import java.nio.file.*;
+import java.util.function.Consumer;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -109,11 +110,9 @@ public class DatimprintCli extends BaseCliApplication {
 		logAppInfo();
 
 		final Path dataPath = argDataPath.orElseGet(OperatingSystem::getWorkingDirectory);
-		final FileSystemDatimprinter datimprinter = new FileSystemDatimprinter();
 		final String lineSeparator = argOutput.map(__ -> LINE_FEED_CHAR).map(String::valueOf).orElseGet(OperatingSystem::getLineSeparator);
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
-
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s`...".formatted(dataPath)).reset());
 		final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
 		try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
@@ -121,8 +120,10 @@ public class DatimprintCli extends BaseCliApplication {
 			try {
 				printImprintHeader(writer, lineSeparator);
 				final AtomicLong counter = new AtomicLong(0);
-				datimprinter.generateImprint(dataPath, throwingConsumer(imprint -> printImprint(writer, imprint, counter, lineSeparator)));
-				logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Done.").reset());
+				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> printImprint(writer, imprint, counter, lineSeparator));
+				try (final FileSystemDatimprinter datimprinter = new FileSystemDatimprinter(imprintConsumer)) {
+					datimprinter.produceImprint(dataPath);
+				}
 			} finally {
 				if(outputStream == System.out) { //don't close the writer if we are writing to stdout
 					writer.flush();
@@ -137,6 +138,7 @@ public class DatimprintCli extends BaseCliApplication {
 				outputStream.flush();
 			}
 		}
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Done.").reset());
 	}
 
 	/**
