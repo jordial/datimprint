@@ -39,6 +39,8 @@ import javax.annotation.*;
 import com.globalmentor.io.Paths;
 import com.globalmentor.security.*;
 
+import io.clogr.Clogged;
+
 /**
  * Data imprinting file system implementation. The {@link #close()} method must be called after the datimprinter is finished being used to ensure that
  * generation and especially production of imprints is complete and resources are cleaned up.
@@ -48,7 +50,7 @@ import com.globalmentor.security.*;
  * @implSpec By default symbolic links are followed.
  * @author Garret Wilson
  */
-public class FileSystemDatimprinter implements Closeable {
+public class FileSystemDatimprinter implements Closeable, Clogged {
 
 	/**
 	 * The algorithm for calculating fingerprints.
@@ -247,6 +249,7 @@ public class FileSystemDatimprinter implements Closeable {
 	 * @throws IOException if there is a problem accessing the file system.
 	 */
 	public CompletableFuture<PathImprint> generateImprintAsync(@Nonnull final Path path) throws IOException {
+		getLogger().trace("Generating imprint for path `{}`.", path);
 		final CompletableFuture<Hash> futureContentHash;
 		if(isRegularFile(path)) {
 			futureContentHash = generateFileContentsFingerprintAsync(path, throwingSupplier(() -> Files.newInputStream(path)));
@@ -308,7 +311,7 @@ public class FileSystemDatimprinter implements Closeable {
 	 */
 	CompletableFuture<Hash> generateDirectoryContentsFingerprintAsync(@Nonnull final Path directory) throws IOException {
 		return produceChildImprintsAsync(directory, throwingSupplier(() -> readAttributes(directory, BasicFileAttributes.class))) //TODO consolidate attribute supplier
-				.thenApply(childImprintFuturesByPath -> {
+				.thenApplyAsync(childImprintFuturesByPath -> { //**important** --- join the child values asynchronously to prevent a deadlock in a chain when threads are exhausted
 					final MessageDigest fingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
 					for(final Map.Entry<Path, CompletableFuture<PathImprint>> childImprintFutureByPath : childImprintFuturesByPath.entrySet()) { //TODO sort appropriately
 						childImprintFutureByPath.getValue().join().contentFingerprint().updateMessageDigest(fingerprintMessageDigest);
