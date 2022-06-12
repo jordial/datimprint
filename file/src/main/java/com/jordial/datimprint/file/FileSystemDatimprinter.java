@@ -29,6 +29,7 @@ import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.function.*;
@@ -311,12 +312,16 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 */
 	CompletableFuture<Hash> generateDirectoryContentsFingerprintAsync(@Nonnull final Path directory) throws IOException {
 		return produceChildImprintsAsync(directory, throwingSupplier(() -> readAttributes(directory, BasicFileAttributes.class))) //TODO consolidate attribute supplier
-				.thenApplyAsync(childImprintFuturesByPath -> { //**important** --- join the child values asynchronously to prevent a deadlock in a chain when threads are exhausted
-					final MessageDigest fingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
-					for(final Map.Entry<Path, CompletableFuture<PathImprint>> childImprintFutureByPath : childImprintFuturesByPath.entrySet()) { //TODO sort appropriately
-						childImprintFutureByPath.getValue().join().contentFingerprint().updateMessageDigest(fingerprintMessageDigest);
-					}
-					return Hash.fromDigest(fingerprintMessageDigest);
+				.thenCompose(childImprintFuturesByPath -> { //**important** --- join the child values asynchronously to prevent a deadlock in a chain when threads are exhausted
+					final CompletableFuture<?>[] childImprintFutures = childImprintFuturesByPath.values().toArray(CompletableFuture[]::new);
+					//wait for all child futures to finish, and then hash their fingerprints in deterministic order
+					return CompletableFuture.allOf(childImprintFutures).thenApply(__ -> {
+						final MessageDigest fingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
+						childImprintFuturesByPath.entrySet().stream().sorted(Comparator.comparing(Map.Entry::getKey)) //sort children by path to ensure deterministic hashing TODO improve sorting to ensure deterministic sorting across file systems
+								.map(Map.Entry::getValue).map(CompletableFuture::join).map(PathImprint::contentFingerprint)
+								.forEach(fingerprint -> fingerprint.updateMessageDigest(fingerprintMessageDigest));
+						return Hash.fromDigest(fingerprintMessageDigest);
+					});
 				});
 	}
 
