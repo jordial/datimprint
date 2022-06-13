@@ -16,6 +16,7 @@
 
 package com.jordial.datimprint.file;
 
+import static com.globalmentor.java.Conditions.checkState;
 import static com.globalmentor.java.Longs.*;
 import static java.nio.file.Files.*;
 import static java.util.Objects.*;
@@ -143,6 +144,21 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 		this.generateExecutor = requireNonNull(generateExecutor);
 		this.produceExecutor = requireNonNull(produceExecutor);
 		this.imprintConsumer = requireNonNull(imprintConsumer);
+	}
+
+	/**
+	 * Builder constructor.
+	 * @param builder The builder providing the specification for creating a new instance.
+	 */
+	protected FileSystemDatimprinter(@Nonnull final Builder builder) {
+		this.generateExecutor = builder.determineGenerateExecutor();
+		this.produceExecutor = builder.determineProduceExecutor();
+		this.imprintConsumer = builder.imprintConsumer;
+	}
+
+	/** @return A new builder for specifying a new {@link FileSystemDatimprinter}. */
+	public static FileSystemDatimprinter.Builder builder() {
+		return new Builder();
 	}
 
 	/**
@@ -338,6 +354,147 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 		fingerprintMessageDigest.update(toBytes(modifiedAt.toEpochMilli()));
 		contentFingerprint.updateMessageDigest(fingerprintMessageDigest);
 		return Hash.fromDigest(fingerprintMessageDigest);
+	}
+
+	/**
+	 * Builder for specification for creating a {@link FileSystemDatimprinter}.
+	 * @author Garret Wilson
+	 */
+	public static class Builder {
+
+		/** Description of type of executor to use. */
+		public enum ExecutorType {
+			/**
+			 * Indicates using a fixed thread pool.
+			 * @see Executors#newFixedThreadPool(int)
+			 */
+			fixedthread,
+			/**
+			 * Indicates using a cached thread pool.
+			 * @see Executors#newCachedThreadPool()
+			 */
+			cachedthread,
+			/**
+			 * Indicates using a FIFO fork/join pool.
+			 * @see ForkJoinPool
+			 * @see Executors#newWorkStealingPool()
+			 */
+			forkjoinfifo,
+			/**
+			 * Indicates using a LIFO fork/join pool.
+			 * @see ForkJoinPool
+			 */
+			forkjoinlifo
+		}
+
+		private Executor generateExecutor = null;
+
+		private ExecutorType generateExecutorType = null;
+
+		/**
+		 * Specifies the generate executor; if not set, a {@link #newDefaultGenerateExecutor()} will be created and used.
+		 * @param generateExecutor The executor for traversing and generating imprints; may or may not be an instance of {@link ExecutorService}, and may or may not
+		 *          be the same executor as {@link #withProduceExecutor(Executor)}.
+		 * @return This builder.
+		 * @throws IllegalStateException if a generate executor-setting method is called twice on the builder.
+		 */
+		public Builder withGenerateExecutor(@Nonnull final Executor generateExecutor) {
+			checkState(this.generateExecutor == null && this.generateExecutorType == null, "Generate executor already specified.");
+			this.generateExecutor = requireNonNull(generateExecutor);
+			return this;
+		}
+
+		/**
+		 * Specifies the generate executor; if not set, a {@link #newDefaultGenerateExecutor()} will be created and used.
+		 * @param generateExecutorType The predefined type of executor for traversing and generating imprints.
+		 * @return This builder.
+		 * @throws IllegalStateException if a generate executor-setting method is called twice on the builder.
+		 */
+		public Builder withGenerateExecutorType(@Nonnull final ExecutorType generateExecutorType) {
+			checkState(this.generateExecutor == null && this.generateExecutorType == null, "Generate executor already specified.");
+			this.generateExecutorType = requireNonNull(generateExecutorType);
+			return this;
+		}
+
+		/**
+		 * Determines the generate executor to use based upon the current settings.
+		 * @return The specified generate executor.
+		 */
+		private Executor determineGenerateExecutor() {
+			if(generateExecutor != null) {
+				return generateExecutor;
+			}
+			if(generateExecutorType != null) { //TODO use Java 17 null case when works in Eclipse; see https://stackoverflow.com/q/72596788
+				return switch(generateExecutorType) {
+					case fixedthread -> newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+					case cachedthread -> newCachedThreadPool();
+					case forkjoinfifo -> new ForkJoinPool(1, ForkJoinPool.defaultForkJoinWorkerThreadFactory, null, true);
+					case forkjoinlifo -> new ForkJoinPool(1, ForkJoinPool.defaultForkJoinWorkerThreadFactory, null, false);
+				};
+			}
+			return newDefaultGenerateExecutor();
+		}
+
+		private Executor produceExecutor;
+
+		/**
+		 * Specifies the produce executor; if not set, a {@link #newDefaultProduceExecutor()} will be created and used.
+		 * @param produceExecutor The executor for producing imprints; may or may not be an instance of {@link ExecutorService}, and may or may not be the same
+		 *          executor as {@link #withGenerateExecutor(Executor)}.
+		 * @return This builder.
+		 */
+		public Builder withProduceExecutor(@Nonnull final Executor produceExecutor) {
+			this.produceExecutor = requireNonNull(produceExecutor);
+			return this;
+		}
+
+		/**
+		 * Determines the produce executor to use based upon the current settings.
+		 * @return The specified produce executor.
+		 */
+		private Executor determineProduceExecutor() {
+			return produceExecutor != null ? produceExecutor : newDefaultProduceExecutor();
+		}
+
+		@Nonnull
+		private Consumer<PathImprint> imprintConsumer = __ -> {};
+
+		/**
+		 * Specifies the imprint consumer.
+		 * @param imprintConsumer The consumer to which imprints will be produced after being generated.
+		 * @return This builder.
+		 */
+		public Builder withImprintConsumer(@Nonnull final Consumer<PathImprint> imprintConsumer) {
+			this.imprintConsumer = requireNonNull(imprintConsumer);
+			return this;
+		}
+
+		/** Builds a new instance of the datimprinter. */
+		public FileSystemDatimprinter build() {
+			return new FileSystemDatimprinter(this);
+		}
+
+		/**
+		 * Returns a default executor for traversal and imprint generation.
+		 * @return A new default generate executor.
+		 */
+		public static Executor newDefaultGenerateExecutor() {
+			return newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+		}
+
+		/**
+		 * Returns a default executor for production of imprints.
+		 * @implSpec This implementation returns an executor using a single thread with maximum priority, as we want the consumer to always have priority so that
+		 *           imprints can be discarded as quickly as possible, lowering the memory overhead.
+		 * @return A new default produce executor.
+		 */
+		public static Executor newDefaultProduceExecutor() {
+			return newSingleThreadExecutor(runnable -> {
+				final Thread thread = Executors.defaultThreadFactory().newThread(runnable);
+				thread.setPriority(Thread.MAX_PRIORITY);
+				return thread;
+			});
+		}
 	}
 
 }
