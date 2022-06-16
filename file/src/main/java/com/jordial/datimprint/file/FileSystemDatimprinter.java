@@ -424,7 +424,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 			if(generateExecutor != null) {
 				return generateExecutor;
 			}
-			if(generateExecutorType != null) { //TODO use Java 17 null case when works in Eclipse; see https://stackoverflow.com/q/72596788
+			if(generateExecutorType != null) { //TODO use null case when available; see https://stackoverflow.com/q/72596788
 				return switch(generateExecutorType) {
 					case fixedthread -> newFixedThreadPool(Runtime.getRuntime().availableProcessors());
 					case cachedthread -> newCachedThreadPool();
@@ -469,7 +469,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 			return this;
 		}
 
-		/** Builds a new instance of the datimprinter. */
+		/** @return A new instance of the datimprinter based upon the current builder configuration. */
 		public FileSystemDatimprinter build() {
 			return new FileSystemDatimprinter(this);
 		}

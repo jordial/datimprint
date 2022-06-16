@@ -24,6 +24,7 @@ import static org.zalando.fauxpas.FauxPas.*;
 import java.io.*;
 import java.nio.charset.*;
 import java.nio.file.*;
+import java.time.Duration;
 import java.util.function.Consumer;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
@@ -112,6 +113,7 @@ public class DatimprintCli extends BaseCliApplication {
 
 		logAppInfo();
 
+		final long startTimeNs = System.nanoTime();
 		final String lineSeparator = argOutput.map(__ -> LINE_FEED_CHAR).map(String::valueOf).orElseGet(OperatingSystem::getLineSeparator);
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
@@ -142,7 +144,10 @@ public class DatimprintCli extends BaseCliApplication {
 				outputStream.flush();
 			}
 		}
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Done.").reset());
+		final Duration elapsed = Duration.ofNanos(System.nanoTime() - startTimeNs);
+
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
+				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(elapsed.toHours(), elapsed.toMinutesPart(), elapsed.toSecondsPart())).reset());
 	}
 
 	/**
