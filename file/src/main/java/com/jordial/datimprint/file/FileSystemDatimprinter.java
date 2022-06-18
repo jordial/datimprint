@@ -16,7 +16,8 @@
 
 package com.jordial.datimprint.file;
 
-import static com.globalmentor.java.Conditions.checkState;
+import static com.globalmentor.io.Paths.*;
+import static com.globalmentor.java.Conditions.*;
 import static com.globalmentor.java.Longs.*;
 import static java.nio.file.Files.*;
 import static java.util.Objects.*;
@@ -333,8 +334,9 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 					//wait for all child futures to finish, and then hash their fingerprints in deterministic order
 					return CompletableFuture.allOf(childImprintFutures).thenApply(__ -> {
 						final MessageDigest fingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
-						childImprintFuturesByPath.entrySet().stream().sorted(Comparator.comparing(Map.Entry::getKey)) //sort children by path to ensure deterministic hashing TODO improve sorting to ensure deterministic sorting across file systems
-								.map(Map.Entry::getValue).map(CompletableFuture::join).map(PathImprint::contentFingerprint)
+						//sort children to ensure deterministic hashing, but we only need to sort by filename as all children are in the same directory
+						childImprintFuturesByPath.entrySet().stream().sorted(Comparator.comparing(Map.Entry::getKey, filenameComparator())).map(Map.Entry::getValue)
+								.map(CompletableFuture::join).map(PathImprint::contentFingerprint)
 								.forEach(fingerprint -> fingerprint.updateMessageDigest(fingerprintMessageDigest));
 						return Hash.fromDigest(fingerprintMessageDigest);
 					});
