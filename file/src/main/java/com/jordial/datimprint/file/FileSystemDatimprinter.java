@@ -18,7 +18,6 @@ package com.jordial.datimprint.file;
 
 import static com.globalmentor.io.Paths.*;
 import static com.globalmentor.java.Conditions.*;
-import static com.globalmentor.java.Longs.*;
 import static java.nio.file.Files.*;
 import static java.util.Objects.*;
 import static java.util.concurrent.Executors.*;
@@ -28,9 +27,8 @@ import static org.zalando.fauxpas.FauxPas.*;
 
 import java.io.*;
 import java.nio.file.*;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
-import java.time.Instant;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.concurrent.*;
@@ -227,22 +225,6 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	}
 
 	/**
-	 * Generates an imprint of a single path given the pre-generated hash of the path contents.
-	 * @param path The path for which an imprint should be generated.
-	 * @param fileAttributesSupplier The source for supplying the file attributes of the path.
-	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
-	 * @return An imprint of the path.
-	 * @throws IOException if there is a problem accessing the path in the file system.
-	 */
-	PathImprint generateImprint(@Nonnull final Path path, @Nonnull final Supplier<BasicFileAttributes> fileAttributesSupplier,
-			@Nonnull final Hash contentFingerprint) throws IOException {
-		final Hash filenameFingerprint = FINGERPRINT_ALGORITHM
-				.hash(Paths.findFilename(path).orElseThrow(() -> new IllegalArgumentException("Path `%s` has no filename.".formatted(path))));
-		final Instant modifiedAt = fileAttributesSupplier.get().lastModifiedTime().toInstant();
-		return new PathImprint(path, filenameFingerprint, modifiedAt, contentFingerprint, generateFingerprint(filenameFingerprint, modifiedAt, contentFingerprint));
-	}
-
-	/**
 	 * Asynchronously generates an imprint of a single path, which must be a regular file or a directory, and then produces it to the imprint consumer.
 	 * @implSpec This implementation delegates to {@link #generateImprintAsync(Path)}.
 	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
@@ -270,15 +252,13 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 		getLogger().trace("Generating imprint for path `{}`.", path);
 		final CompletableFuture<Hash> futureContentHash;
 		if(isRegularFile(path)) {
-			futureContentHash = generateFileContentsFingerprintAsync(path, throwingSupplier(() -> Files.newInputStream(path)));
+			futureContentHash = generateFileContentsFingerprintAsync(path);
 		} else if(isDirectory(path)) {
 			futureContentHash = generateDirectoryContentsFingerprintAsync(path);
 		} else {
 			throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
 		}
-		return futureContentHash
-				.thenApply(throwingFunction(contentFingerprint -> generateImprint(path, throwingSupplier(() -> readAttributes(path, BasicFileAttributes.class)), //TODO consolidate attribute supplier
-						contentFingerprint)));
+		return futureContentHash.thenApply(throwingFunction(contentFingerprint -> generateImprint(path, contentFingerprint)));
 	}
 
 	/**
@@ -287,14 +267,12 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * @implSpec This implementation delegates to {@link #produceImprintAsync(Path)} to produce each child imprint.
 	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
 	 * @param directory The path for which an imprint should be produced.
-	 * @param fileAttributesSupplier The source for supplying the file attributes of the path.
 	 * @return A map of all future imprints for each child mapped to the path of each child.
 	 * @throws IOException if there is a problem traversing the directory or reading file contents.
 	 */
-	CompletableFuture<Map<Path, CompletableFuture<PathImprint>>> produceChildImprintsAsync(@Nonnull final Path directory,
-			@Nonnull final Supplier<BasicFileAttributes> fileAttributesSupplier) throws IOException {
+	CompletableFuture<Map<Path, CompletableFuture<PathImprint>>> produceChildImprintsAsync(@Nonnull final Path directory) throws IOException {
 		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
-			try (final Stream<Path> childPaths = Files.list(directory)) {
+			try (final Stream<Path> childPaths = list(directory)) {
 				return childPaths.collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
 			}
 		}), getGenerateExecutor());
@@ -304,14 +282,12 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * Generates the fingerprint of a file's contents asynchronously.
 	 * @implSpec This implementation uses the executor returned by {@link #getGenerateExecutor()}.
 	 * @param file The file for which a fingerprint should be generated of the contents.
-	 * @param contentSupplier The source for supplying the content of the file.
 	 * @return A future fingerprint of the file contents.
 	 * @throws IOException if there is a problem reading the content.
 	 */
-	CompletableFuture<Hash> generateFileContentsFingerprintAsync(@Nonnull final Path file, @Nonnull final Supplier<InputStream> contentSupplier)
-			throws IOException {
+	CompletableFuture<Hash> generateFileContentsFingerprintAsync(@Nonnull final Path file) throws IOException {
 		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
-			try (final InputStream inputStream = contentSupplier.get()) {
+			try (final InputStream inputStream = newInputStream(file)) {
 				return FINGERPRINT_ALGORITHM.hash(inputStream);
 			}
 		}), getGenerateExecutor());
@@ -320,7 +296,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	/**
 	 * Generates the fingerprint of a directory's contents asynchronously.
 	 * @apiNote This method inherently involves production of child imprints during generation of the directory contents fingerprint.
-	 * @implSpec This method generates child imprints by delegating to {@link #produceChildImprintsAsync(Path, Supplier)}.
+	 * @implSpec This method generates child imprints by delegating to {@link #produceChildImprintsAsync(Path)}.
 	 * @implSpec This implementation uses the executor returned by {@link #getGenerateExecutor()}.
 	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
 	 * @param directory The directory for which a fingerprint should be generated of the children.
@@ -328,8 +304,8 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * @throws IOException if there is a problem traversing the directory or reading file contents.
 	 */
 	CompletableFuture<Hash> generateDirectoryContentsFingerprintAsync(@Nonnull final Path directory) throws IOException {
-		return produceChildImprintsAsync(directory, throwingSupplier(() -> readAttributes(directory, BasicFileAttributes.class))) //TODO consolidate attribute supplier
-				.thenCompose(childImprintFuturesByPath -> { //**important** --- join the child values asynchronously to prevent a deadlock in a chain when threads are exhausted
+		return produceChildImprintsAsync(directory) //**important** --- join the child values asynchronously to prevent a deadlock in a chain when threads are exhausted
+				.thenCompose(childImprintFuturesByPath -> {
 					final CompletableFuture<?>[] childImprintFutures = childImprintFuturesByPath.values().toArray(CompletableFuture[]::new);
 					//wait for all child futures to finish, and then hash their fingerprints in deterministic order
 					return CompletableFuture.allOf(childImprintFutures).thenApply(__ -> {
@@ -344,16 +320,40 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	}
 
 	/**
+	 * Generates an imprint of a single path given the pre-generated hash of the path contents.
+	 * @implSpec This implementation delegates to {@link #generateImprint(Path, FileTime, Hash)}.
+	 * @param path The path for which an imprint should be generated.
+	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
+	 * @return An imprint of the path.
+	 * @throws IOException if there is a problem accessing the path in the file system.
+	 */
+	PathImprint generateImprint(@Nonnull final Path path, @Nonnull final Hash contentFingerprint) throws IOException {
+		return generateImprint(path, getLastModifiedTime(path), contentFingerprint);
+	}
+
+	/**
+	 * Generates an imprint of a single path given the modification timestamp and pre-generated hash of the path contents.
+	 * @implSpec The overall fingerprint is generated using {@link #generateFingerprint(Hash, Hash)}.
+	 * @param path The path for which an imprint should be generated.
+	 * @param modifiedAt The modification timestamp of the file.
+	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
+	 * @return An imprint of the path.
+	 */
+	PathImprint generateImprint(@Nonnull final Path path, @Nonnull final FileTime modifiedAt, @Nonnull final Hash contentFingerprint) {
+		final Hash filenameFingerprint = FINGERPRINT_ALGORITHM
+				.hash(Paths.findFilename(path).orElseThrow(() -> new IllegalArgumentException("Path `%s` has no filename.".formatted(path))));
+		return new PathImprint(path, filenameFingerprint, modifiedAt, contentFingerprint, generateFingerprint(filenameFingerprint, contentFingerprint));
+	}
+
+	/**
 	 * Returns an overall fingerprint for the components of an imprint.
 	 * @param filenameFingerprint The fingerprint of the path filename.
-	 * @param modifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
 	 * @return A fingerprint of all the components.
 	 */
-	public static Hash generateFingerprint(@Nonnull final Hash filenameFingerprint, @Nonnull final Instant modifiedAt, @Nonnull final Hash contentFingerprint) {
+	public static Hash generateFingerprint(@Nonnull final Hash filenameFingerprint, @Nonnull final Hash contentFingerprint) {
 		final MessageDigest fingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
 		filenameFingerprint.updateMessageDigest(fingerprintMessageDigest);
-		fingerprintMessageDigest.update(toBytes(modifiedAt.toEpochMilli()));
 		contentFingerprint.updateMessageDigest(fingerprintMessageDigest);
 		return Hash.fromDigest(fingerprintMessageDigest);
 	}
@@ -443,9 +443,11 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 		 * Specifies the produce executor; if not set, a {@link #newDefaultProduceExecutor()} will be created and used.
 		 * @param produceExecutor The executor for producing imprints; may or may not be an instance of {@link ExecutorService}, and may or may not be the same
 		 *          executor as {@link #withGenerateExecutor(Executor)}.
+		 * @throws IllegalStateException if a produce executor-setting method is called twice on the builder.
 		 * @return This builder.
 		 */
 		public Builder withProduceExecutor(@Nonnull final Executor produceExecutor) {
+			checkState(this.produceExecutor == null && this.produceExecutor == null, "Produce executor already specified.");
 			this.produceExecutor = requireNonNull(produceExecutor);
 			return this;
 		}
@@ -456,6 +458,23 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 		 */
 		private Executor determineProduceExecutor() {
 			return produceExecutor != null ? produceExecutor : newDefaultProduceExecutor();
+		}
+
+		/**
+		 * Specifies a single executor to use as the generate executor and as the produce executor.
+		 * @apiNote This method is used primarily for testing; typically it is less efficient to have the same executor for generation and production.
+		 * @param executor The executor for traversing, generating, and producing imprints.
+		 * @return This builder.
+		 * @throws IllegalStateException if a generate executor-setting method or a produce executor-setting method is called twice on the builder.
+		 * @see #withGenerateExecutor(Executor)
+		 * @see #withProduceExecutor(Executor)
+		 */
+		public Builder withExecutor(@Nonnull final Executor executor) {
+			checkState(this.generateExecutor == null && this.generateExecutorType == null, "Generate executor already specified.");
+			checkState(this.produceExecutor == null && this.produceExecutor == null, "Produce executor already specified.");
+			this.generateExecutor = requireNonNull(executor);
+			this.produceExecutor = requireNonNull(executor);
+			return this;
 		}
 
 		@Nonnull

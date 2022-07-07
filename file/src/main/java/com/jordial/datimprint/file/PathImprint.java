@@ -19,7 +19,7 @@ package com.jordial.datimprint.file;
 import static java.util.Objects.*;
 
 import java.nio.file.Path;
-import java.time.Instant;
+import java.nio.file.attribute.FileTime;
 
 import com.globalmentor.security.Hash;
 
@@ -27,12 +27,12 @@ import com.globalmentor.security.Hash;
  * Data holder for the imprint of a path, which may be a directory or a file.
  * @param path The path being described
  * @param filenameFingerprint The hash of the path filename.
- * @param modifiedAt The modification timestamp of the file.
+ * @param modifiedAt The modification timestamp of the file; for informational purposes—not included in the fingerprint.
  * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
- * @param fingerprint The full fingerprint of the file or directory, including its path, modification timestamp, and content fingerprint.
+ * @param fingerprint The full fingerprint of the file or directory, including its path and content fingerprint.
  * @author Garret Wilson
  */
-public record PathImprint(Path path, Hash filenameFingerprint, Instant modifiedAt, Hash contentFingerprint, Hash fingerprint) {
+public record PathImprint(Path path, Hash filenameFingerprint, FileTime modifiedAt, Hash contentFingerprint, Hash fingerprint) {
 
 	/**
 	 * Constructor for argument validation.

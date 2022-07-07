@@ -39,7 +39,7 @@ public class FileSystemDatimprinterTest {
 
 	/*
 	 * It would be possible to mock the file system and file system provider, like this:
-	 * 
+	 *
 	 * ```
 	 * final Path testPath = mock(Path.class);
 	 * final FileSystem testFileSystem = mock(FileSystem.class);
@@ -50,14 +50,17 @@ public class FileSystemDatimprinterTest {
 	 * when(testFileSystemProvider.newInputStream(eq(testPath), any())).thenReturn(new ByteArrayInputStream("foobar".getBytes(UTF_8)));
 	 * etc.
 	 * ```
-	 * 
+	 *
 	 * But that would be brittle, depending on the implementation of the JDK many layers down.
 	 * The datimprinter implementation could instead call the file system and file system provider directly
 	 * and guarantee this in its contract, but it isn't appropriate as a general rules to make implementation
 	 * guarantees in the API.
+	 *
+	 * It is simpler to simply create integrations tests using an actual file system, which will
+	 * normally be pretty quick anyway.
 	 */
 
-	/** @see FileSystemDatimprinter#generateImprint(Path, java.util.function.Supplier, java.util.function.Supplier) */
+	/** @see FileSystemDatimprinter#generateImprint(Path, FileTime, Hash) */
 	@Test
 	void testGenerateFileImprint() throws IOException {
 		final Path mockPath = mock(Path.class);
@@ -65,23 +68,18 @@ public class FileSystemDatimprinterTest {
 		final String filename = "foo.bar";
 		when(mockFileNamePath.toString()).thenReturn(filename);
 		when(mockPath.getFileName()).thenReturn(mockFileNamePath);
-		final BasicFileAttributes mockFileAttributes = mock(BasicFileAttributes.class);
-		final Instant lastModifiedTime = Instant.ofEpochSecond(1653252496, 751214600);
-		when(mockFileAttributes.lastModifiedTime()).thenReturn(FileTime.from(lastModifiedTime));
+		final FileTime lastModifiedTime = FileTime.from(Instant.ofEpochSecond(1653252496, 751214600));
 		final String content = "foobar";
 		final Hash contentFingerprint = FINGERPRINT_ALGORITHM.hash(content);
 
 		try (final FileSystemDatimprinter datimprinter = new FileSystemDatimprinter(Runnable::run)) {
-			final PathImprint imprint = datimprinter.generateImprint(mockPath, () -> mockFileAttributes, contentFingerprint);
+			final PathImprint imprint = datimprinter.generateImprint(mockPath, lastModifiedTime, contentFingerprint);
 			assertThat(imprint.path(), is(mockPath));
 			assertThat(imprint.filenameFingerprint(), is(FINGERPRINT_ALGORITHM.hash(filename)));
 			assertThat(imprint.modifiedAt(), is(lastModifiedTime));
 			assertThat(imprint.contentFingerprint(), is(contentFingerprint));
-			assertThat(imprint.fingerprint(),
-					is(FileSystemDatimprinter.generateFingerprint(imprint.filenameFingerprint(), imprint.modifiedAt(), imprint.contentFingerprint())));
+			assertThat(imprint.fingerprint(), is(FileSystemDatimprinter.generateFingerprint(imprint.filenameFingerprint(), imprint.contentFingerprint())));
 		}
 	}
-
-	//TODO add test for testing content retrieval using () -> new ByteArrayInputStream(content.getBytes(UTF_8)
 
 }
