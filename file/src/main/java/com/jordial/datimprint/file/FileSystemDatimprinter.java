@@ -19,6 +19,7 @@ package com.jordial.datimprint.file;
 import static com.globalmentor.io.Paths.*;
 import static com.globalmentor.java.Conditions.*;
 import static java.nio.file.Files.*;
+import static java.util.Comparator.*;
 import static java.util.Objects.*;
 import static java.util.concurrent.Executors.*;
 import static java.util.function.Function.*;
@@ -29,7 +30,6 @@ import java.io.*;
 import java.nio.file.*;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
-import java.util.Comparator;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.function.*;
@@ -37,7 +37,6 @@ import java.util.stream.Stream;
 
 import javax.annotation.*;
 
-import com.globalmentor.io.Paths;
 import com.globalmentor.security.*;
 
 import io.clogr.Clogged;
@@ -47,7 +46,9 @@ import io.clogr.Clogged;
  * generation and especially production of imprints is complete and resources are cleaned up.
  * @apiNote Generally method with names beginning with <code>generate…()</code> only generate information and do not pass it to the consumer, while methods with
  *          names beginning with <code>produce…</code> will involve generating information and producing it to the consumer, although some methods (notably
- *          {@link #generateDirectoryContentsFingerprintAsync(Path)}) inherently involves producing child imprints.
+ *          {@link #generateDirectoryContentChildrenFingerprintsAsync(Path)}) inherently involves producing child imprints.
+ * @apiNote The word "contents" is used when referring to what a file or directory contains, while "content" is used as an adjective, such as "content
+ *          fingerprint".
  * @implSpec By default symbolic links are followed.
  * @author Garret Wilson
  */
@@ -220,7 +221,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * @see #getProduceExecutor()
 	 * @throws CompletionException if there was an error completing asynchronous generation and production.
 	 */
-	public PathImprint produceImprint(@Nonnull final Path path) throws IOException {
+	public PathImprint produceImprint(@Nonnull final Path path) throws IOException { //TODO consider removing this method to simplify the API
 		return produceImprintAsync(path).join();
 	}
 
@@ -250,19 +251,29 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 */
 	public CompletableFuture<PathImprint> generateImprintAsync(@Nonnull final Path path) throws IOException {
 		getLogger().trace("Generating imprint for path `{}`.", path);
-		final CompletableFuture<Hash> futureContentHash;
+		final FileTime modifiedAt = getLastModifiedTime(path);
 		if(isRegularFile(path)) {
-			futureContentHash = generateFileContentsFingerprintAsync(path);
+			final CompletableFuture<Hash> futureContentFingerprint = generateFileContentFingerprintAsync(path);
+			return futureContentFingerprint
+					.thenApply(throwingFunction(contentFingerprint -> PathImprint.forFile(path, modifiedAt, contentFingerprint, FINGERPRINT_ALGORITHM)));
 		} else if(isDirectory(path)) {
-			futureContentHash = generateDirectoryContentsFingerprintAsync(path);
+			final CompletableFuture<DirectoryContentChildrenFingerprints> futureContentChildrenFingerprints = generateDirectoryContentChildrenFingerprintsAsync(path);
+			return futureContentChildrenFingerprints.thenApply(throwingFunction(contentChildrenFingerprints -> PathImprint.forDirectory(path, modifiedAt,
+					contentChildrenFingerprints.contentFingerprint(), contentChildrenFingerprints.childrenFingerprint(), FINGERPRINT_ALGORITHM)));
+
 		} else {
 			throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
 		}
-		return futureContentHash.thenApply(throwingFunction(contentFingerprint -> generateImprint(path, contentFingerprint)));
 	}
 
 	/**
 	 * Asynchronously generates imprints for all immediate children of a directory.
+	 * @apiNote Perhaps a more modularized approach would be to separate generation from production. However generation of each direct child must include
+	 *          production of the second level and below via the ultimate calls to {@link #generateDirectoryContentChildrenFingerprintsAsync(Path)} (otherwise the
+	 *          caller would have no way to produce the imprint of subsequent levels). It is more consistent to schedule production of the immediate children
+	 *          imprints as well. Moreover this approach might gain a tiny efficiency: production of direct child imprints can be scheduled before waiting for the
+	 *          entire directory listing to complete, and as production occurs in a separate thread, this could theoretically complete generation and production
+	 *          of children more quickly, freeing resources for other children without needing to wait until the directory listing is finished.
 	 * @implSpec This implementation uses the executor returned by {@link #getGenerateExecutor()} for traversal.
 	 * @implSpec This implementation delegates to {@link #produceImprintAsync(Path)} to produce each child imprint.
 	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
@@ -285,7 +296,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * @return A future fingerprint of the file contents.
 	 * @throws IOException if there is a problem reading the content.
 	 */
-	CompletableFuture<Hash> generateFileContentsFingerprintAsync(@Nonnull final Path file) throws IOException {
+	CompletableFuture<Hash> generateFileContentFingerprintAsync(@Nonnull final Path file) throws IOException {
 		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
 			try (final InputStream inputStream = newInputStream(file)) {
 				return FINGERPRINT_ALGORITHM.hash(inputStream);
@@ -294,27 +305,33 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	}
 
 	/**
-	 * Generates the fingerprint of a directory's contents asynchronously.
+	 * Generates fingerprints of a directory's child contents and children asynchronously.
+	 * @apiNote Because each child directory imprint depends on the fingerprint of its children, this method ultimately includes recursive traversal of all
+	 *          descendants.
 	 * @apiNote This method inherently involves production of child imprints during generation of the directory contents fingerprint.
 	 * @implSpec This method generates child imprints by delegating to {@link #produceChildImprintsAsync(Path)}.
 	 * @implSpec This implementation uses the executor returned by {@link #getGenerateExecutor()}.
 	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
 	 * @param directory The directory for which a fingerprint should be generated of the children.
-	 * @return A future fingerprint of the directory contents.
+	 * @return A future fingerprint of the directory content fingerprints and children fingerprints.
 	 * @throws IOException if there is a problem traversing the directory or reading file contents.
 	 */
-	CompletableFuture<Hash> generateDirectoryContentsFingerprintAsync(@Nonnull final Path directory) throws IOException {
+	CompletableFuture<DirectoryContentChildrenFingerprints> generateDirectoryContentChildrenFingerprintsAsync(@Nonnull final Path directory) throws IOException {
 		return produceChildImprintsAsync(directory) //**important** --- join the child values asynchronously to prevent a deadlock in a chain when threads are exhausted
 				.thenCompose(childImprintFuturesByPath -> {
 					final CompletableFuture<?>[] childImprintFutures = childImprintFuturesByPath.values().toArray(CompletableFuture[]::new);
 					//wait for all child futures to finish, and then hash their fingerprints in deterministic order
 					return CompletableFuture.allOf(childImprintFutures).thenApply(__ -> {
-						final MessageDigest fingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
+						final MessageDigest contentFingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
+						final MessageDigest childrenFingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
 						//sort children to ensure deterministic hashing, but we only need to sort by filename as all children are in the same directory
-						childImprintFuturesByPath.entrySet().stream().sorted(Comparator.comparing(Map.Entry::getKey, filenameComparator())).map(Map.Entry::getValue)
-								.map(CompletableFuture::join).map(PathImprint::contentFingerprint)
-								.forEach(fingerprint -> fingerprint.updateMessageDigest(fingerprintMessageDigest));
-						return Hash.fromDigest(fingerprintMessageDigest);
+						childImprintFuturesByPath.entrySet().stream().sorted(comparing(Map.Entry::getKey, filenameComparator())).map(Map.Entry::getValue)
+								.map(CompletableFuture::join).forEach(childImprint -> {
+									childImprint.contentFingerprint().updateMessageDigest(contentFingerprintMessageDigest);
+									childImprint.fingerprint().updateMessageDigest(childrenFingerprintMessageDigest);
+								});
+						return new DirectoryContentChildrenFingerprints(Hash.fromDigest(contentFingerprintMessageDigest),
+								Hash.fromDigest(childrenFingerprintMessageDigest));
 					});
 				});
 	}
@@ -327,35 +344,59 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * @return An imprint of the path.
 	 * @throws IOException if there is a problem accessing the path in the file system.
 	 */
-	PathImprint generateImprint(@Nonnull final Path path, @Nonnull final Hash contentFingerprint) throws IOException {
-		return generateImprint(path, getLastModifiedTime(path), contentFingerprint);
-	}
+	//	PathImprint generateImprint(@Nonnull final Path path, @Nonnull final Hash contentFingerprint) throws IOException {
+	//		return generateImprint(path, getLastModifiedTime(path), contentFingerprint);
+	//	}
 
 	/**
 	 * Generates an imprint of a single path given the modification timestamp and pre-generated hash of the path contents.
-	 * @implSpec The overall fingerprint is generated using {@link #generateFingerprint(Hash, Hash)}.
+	 * @implSpec The overall fingerprint is generated using {@link #generateFingerprint(Hash, FileTime, Hash)}.
 	 * @param path The path for which an imprint should be generated.
 	 * @param modifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
 	 * @return An imprint of the path.
 	 */
-	PathImprint generateImprint(@Nonnull final Path path, @Nonnull final FileTime modifiedAt, @Nonnull final Hash contentFingerprint) {
-		final Hash filenameFingerprint = FINGERPRINT_ALGORITHM
-				.hash(Paths.findFilename(path).orElseThrow(() -> new IllegalArgumentException("Path `%s` has no filename.".formatted(path))));
-		return new PathImprint(path, filenameFingerprint, modifiedAt, contentFingerprint, generateFingerprint(filenameFingerprint, contentFingerprint));
-	}
+	//	PathImprint generateImprint(@Nonnull final Path path, @Nonnull final FileTime modifiedAt, @Nonnull final Hash contentFingerprint) {
+	//		final Hash filenameFingerprint = FINGERPRINT_ALGORITHM
+	//				.hash(Paths.findFilename(path).orElseThrow(() -> new IllegalArgumentException("Path `%s` has no filename.".formatted(path))));
+	//		return new PathImprint(path, filenameFingerprint, modifiedAt, contentFingerprint, generateFingerprint(filenameFingerprint, modifiedAt, contentFingerprint));
+	//	}
 
 	/**
 	 * Returns an overall fingerprint for the components of an imprint.
+	 * @implSpec the file time is hashed at millisecond resolution.
 	 * @param filenameFingerprint The fingerprint of the path filename.
+	 * @param modifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
 	 * @return A fingerprint of all the components.
 	 */
-	public static Hash generateFingerprint(@Nonnull final Hash filenameFingerprint, @Nonnull final Hash contentFingerprint) {
-		final MessageDigest fingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
-		filenameFingerprint.updateMessageDigest(fingerprintMessageDigest);
-		contentFingerprint.updateMessageDigest(fingerprintMessageDigest);
-		return Hash.fromDigest(fingerprintMessageDigest);
+	//	public static Hash generateFingerprint(@Nonnull final Hash filenameFingerprint, @Nonnull final FileTime modifiedAt, @Nonnull final Hash contentFingerprint) {
+	//		final MessageDigest fingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
+	//		filenameFingerprint.updateMessageDigest(fingerprintMessageDigest);
+	//		fingerprintMessageDigest.update(toBytes(modifiedAt.toMillis()));
+	//		contentFingerprint.updateMessageDigest(fingerprintMessageDigest);
+	//		return Hash.fromDigest(fingerprintMessageDigest);
+	//	}
+
+	/**
+	 * Holder of two fingerprints calculated from directory children.
+	 * @param contentFingerprint The fingerprint of the child content fingerprints of the directory.
+	 * @param childrenFingerprint The fingerprint of the the child fingerprints of the directory. Note that am empty directory is still expected to have a
+	 *          children fingerprint.
+	 * @author Garret Wilson
+	 */
+	record DirectoryContentChildrenFingerprints(@Nonnull Hash contentFingerprint, @Nonnull Hash childrenFingerprint) {
+
+		/**
+		 * Constructor for argument validation.
+		 * @param contentFingerprint The fingerprint of the child content fingerprints of the directory.
+		 * @param childrenFingerprint The fingerprint of the the child fingerprints of the directory.
+		 */
+		public DirectoryContentChildrenFingerprints {
+			requireNonNull(contentFingerprint);
+			requireNonNull(childrenFingerprint);
+		}
+
 	}
 
 	/**
