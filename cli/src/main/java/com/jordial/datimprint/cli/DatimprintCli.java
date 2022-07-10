@@ -24,6 +24,8 @@ import static org.zalando.fauxpas.FauxPas.*;
 import java.io.*;
 import java.nio.charset.*;
 import java.nio.file.*;
+import java.time.Duration;
+import java.util.function.Consumer;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -93,36 +95,41 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @param argDataPath The file or base directory of the data for which an imprint should be generated.
 	 * @param argCharset The charset for text encoding.
 	 * @param argOutput The path to a file in which to store the output.
+	 * @param argExecutorType The particular type of executor to use, if any.
 	 * @throws IOException If an I/O error occurs.
 	 */
 	@Command(description = "Generates a data imprint of the indicated file or directory tree. The output will use the default console/system encoding and line separator unless an output file is specified.", mixinStandardHelpOptions = true)
 	public void generate(
-			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated.%nDefaults to the working directory, currently @|bold ${DEFAULT-VALUE}|@.", defaultValue = "${sys:user.dir}", arity = "0..1") @Nonnull Optional<Path> argDataPath,
+			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated.%nDefaults to the working directory.") @Nonnull Path argDataPath,
 			@Option(names = {"--charset",
 					"-c"}, description = "The charset for text encoding.%nDefaults to UTF-8 if an output file is specified; otherwise uses the console system encoding unless redirected, in which case uses the default system encoding.") Optional<Charset> argCharset,
 			@Option(names = {"--output",
-					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. A single LF will be used as the line separator.") Optional<Path> argOutput)
+					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. A single LF will be used as the line separator.") Optional<Path> argOutput,
+			@Option(names = {
+					"--executor"}, description = "Specifies a particular executor to use for multithreading. Valid values: ${COMPLETION-CANDIDATES}") Optional<FileSystemDatimprinter.Builder.ExecutorType> argExecutorType)
 			throws IOException {
 
 		final Logger logger = getLogger();
 
 		logAppInfo();
 
-		final Path dataPath = argDataPath.orElseGet(OperatingSystem::getWorkingDirectory);
-		final FileSystemDatimprinter datimprinter = new FileSystemDatimprinter();
+		final long startTimeNs = System.nanoTime();
 		final String lineSeparator = argOutput.map(__ -> LINE_FEED_CHAR).map(String::valueOf).orElseGet(OperatingSystem::getLineSeparator);
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
-
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s`...".formatted(dataPath)).reset());
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s` ...".formatted(argDataPath)).reset());
 		final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
 		try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
 			final Writer writer = new BufferedWriter(new OutputStreamWriter(outputStream, charset));
 			try {
 				printImprintHeader(writer, lineSeparator);
 				final AtomicLong counter = new AtomicLong(0);
-				datimprinter.generateImprint(dataPath, throwingConsumer(imprint -> printImprint(writer, imprint, counter, lineSeparator)));
-				logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Done.").reset());
+				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> printImprint(writer, imprint, counter, lineSeparator));
+				final FileSystemDatimprinter.Builder datimprinterBuilder = FileSystemDatimprinter.builder().withImprintConsumer(imprintConsumer);
+				argExecutorType.ifPresent(datimprinterBuilder::withGenerateExecutorType);
+				try (final FileSystemDatimprinter datimprinter = datimprinterBuilder.build()) {
+					datimprinter.produceImprint(argDataPath);
+				}
 			} finally {
 				if(outputStream == System.out) { //don't close the writer if we are writing to stdout
 					writer.flush();
@@ -137,6 +144,10 @@ public class DatimprintCli extends BaseCliApplication {
 				outputStream.flush();
 			}
 		}
+		final Duration elapsed = Duration.ofNanos(System.nanoTime() - startTimeNs);
+
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
+				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(elapsed.toHours(), elapsed.toMinutesPart(), elapsed.toSecondsPart())).reset());
 	}
 
 	/**
