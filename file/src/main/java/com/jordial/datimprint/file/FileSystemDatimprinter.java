@@ -243,8 +243,9 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	}
 
 	/**
-	 * Asynchronously generates an imprint of a single path, which must be a regular file or a directory.
-	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
+	 * Asynchronously generates an imprint of a single path, which must be a regular file or a directory. Any descendant imprints will be produced, but the path
+	 * itself will not be produced.
+	 * @apiNote This method involves asynchronous recursion to all the descendants of the directory.
 	 * @param path The path for which an imprint should be generated.
 	 * @return A future imprint of the path.
 	 * @throws IOException if there is a problem accessing the file system.
