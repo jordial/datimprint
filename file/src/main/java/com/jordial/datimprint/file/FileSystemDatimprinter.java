@@ -322,8 +322,8 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 					final CompletableFuture<?>[] childImprintFutures = childImprintFuturesByPath.values().toArray(CompletableFuture[]::new);
 					//wait for all child futures to finish, and then hash their fingerprints in deterministic order
 					return CompletableFuture.allOf(childImprintFutures).thenApply(__ -> {
-						final MessageDigest contentFingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
-						final MessageDigest childrenFingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
+						final MessageDigest contentFingerprintMessageDigest = FINGERPRINT_ALGORITHM.newMessageDigest();
+						final MessageDigest childrenFingerprintMessageDigest = FINGERPRINT_ALGORITHM.newMessageDigest();
 						//sort children to ensure deterministic hashing, but we only need to sort by filename as all children are in the same directory
 						childImprintFuturesByPath.entrySet().stream().sorted(comparing(Map.Entry::getKey, filenameComparator())).map(Map.Entry::getValue)
 								.map(CompletableFuture::join).forEach(childImprint -> {

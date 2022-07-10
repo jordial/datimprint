@@ -124,7 +124,7 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime modifiedAt, @Non
 			@Nullable final Hash childrenFingerprint, @Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) {
 		final Hash filenameFingerprint = fingerprintAlgorithm
 				.hash(Paths.findFilename(path).orElseThrow(() -> new IllegalArgumentException("Path `%s` has no filename.".formatted(path))));
-		final MessageDigest fingerprintMessageDigest = fingerprintAlgorithm.getInstance();
+		final MessageDigest fingerprintMessageDigest = fingerprintAlgorithm.newMessageDigest();
 		filenameFingerprint.updateMessageDigest(fingerprintMessageDigest);
 		fingerprintMessageDigest.update(toBytes(modifiedAt.toMillis()));
 		contentFingerprint.updateMessageDigest(fingerprintMessageDigest);
