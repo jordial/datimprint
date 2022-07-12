@@ -106,7 +106,7 @@ public class DatimprintCli extends BaseCliApplication {
 			@Option(names = {"--output",
 					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. A single LF will be used as the line separator.") Optional<Path> argOutput,
 			@Option(names = {
-					"--executor"}, description = "Specifies a particular executor to use for multithreading. Valid values: ${COMPLETION-CANDIDATES}") Optional<FileSystemDatimprinter.Builder.ExecutorType> argExecutorType)
+					"--executor"}, description = "Specifies a particular executor to use for multithreading. Valid values: ${COMPLETION-CANDIDATES}") Optional<PathImprintGenerator.Builder.ExecutorType> argExecutorType)
 			throws IOException {
 
 		final Logger logger = getLogger();
@@ -117,18 +117,18 @@ public class DatimprintCli extends BaseCliApplication {
 		final String lineSeparator = argOutput.map(__ -> LINE_FEED_CHAR).map(String::valueOf).orElseGet(OperatingSystem::getLineSeparator);
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s` ...".formatted(argDataPath)).reset());
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s` ...".formatted(argDataPath.toAbsolutePath())).reset());
 		final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
 		try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
 			final Writer writer = new BufferedWriter(new OutputStreamWriter(outputStream, charset));
 			try {
-				printImprintHeader(writer, lineSeparator);
+				writeImprintHeader(writer, lineSeparator);
 				final AtomicLong counter = new AtomicLong(0);
-				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> printImprint(writer, imprint, counter, lineSeparator));
-				final FileSystemDatimprinter.Builder datimprinterBuilder = FileSystemDatimprinter.builder().withImprintConsumer(imprintConsumer);
-				argExecutorType.ifPresent(datimprinterBuilder::withGenerateExecutorType);
-				try (final FileSystemDatimprinter datimprinter = datimprinterBuilder.build()) {
-					datimprinter.produceImprint(argDataPath);
+				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> writeImprint(writer, imprint, counter, lineSeparator));
+				final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer);
+				argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
+				try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
+					imprintGenerator.produceImprint(argDataPath);
 				}
 			} finally {
 				if(outputStream == System.out) { //don't close the writer if we are writing to stdout
@@ -156,7 +156,7 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @param lineSeparator The end-of-line character.
 	 * @throws IOException if an I/O error occurs writing the data.
 	 */
-	protected void printImprintHeader(@Nonnull final Writer writer, @Nonnull final String lineSeparator) throws IOException {
+	protected void writeImprintHeader(@Nonnull final Writer writer, @Nonnull final String lineSeparator) throws IOException {
 		writer.write("#\tMiniprint\tPath\tModified At\tContent Fingerprint\tComplete Fingerprint%s".formatted(lineSeparator));
 		//TODO add "Levels" column with e.g. `+++` designation for number of levels below root
 	}
@@ -169,7 +169,7 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @param lineSeparator The end-of-line character.
 	 * @throws IOException if an I/O error occurs writing the data.
 	 */
-	protected void printImprint(@Nonnull final Writer writer, @Nonnull final PathImprint imprint, @Nonnull final AtomicLong counter,
+	protected void writeImprint(@Nonnull final Writer writer, @Nonnull final PathImprint imprint, @Nonnull final AtomicLong counter,
 			@Nonnull final String lineSeparator) throws IOException {
 		//TODO ensure no tab in path
 		writer.write("%s\t%s\t%s\t%s\t%s\t%s%s".formatted(Long.toUnsignedString(counter.incrementAndGet()), imprint.fingerprint().toChecksum().substring(0, 8),

@@ -42,7 +42,7 @@ import com.globalmentor.security.*;
 import io.clogr.Clogged;
 
 /**
- * Data imprinting file system implementation. The {@link #close()} method must be called after the datimprinter is finished being used to ensure that
+ * Data imprinting file system implementation. The {@link #close()} method must be called after the imprint generator is finished being used to ensure that
  * generation and especially production of imprints is complete and resources are cleaned up.
  * @apiNote Generally method with names beginning with <code>generate…()</code> only generate information and do not pass it to the consumer, while methods with
  *          names beginning with <code>produce…</code> will involve generating information and producing it to the consumer, although some methods (notably
@@ -52,7 +52,7 @@ import io.clogr.Clogged;
  * @implSpec By default symbolic links are followed.
  * @author Garret Wilson
  */
-public class FileSystemDatimprinter implements Closeable, Clogged {
+public class PathImprintGenerator implements Closeable, Clogged {
 
 	/**
 	 * The algorithm for calculating fingerprints.
@@ -93,7 +93,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * @implSpec Production of imprints is performed in a separate thread with maximum priority, as we want the consumer to always have priority so that imprints
 	 *           can be discarded as quickly as possible, lowering the memory overhead.
 	 */
-	public FileSystemDatimprinter() {
+	public PathImprintGenerator() {
 		this((Consumer<PathImprint>)__ -> {}); //ignore produced imprints
 	}
 
@@ -104,7 +104,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 *           can be discarded as quickly as possible, lowering the memory overhead.
 	 * @param imprintConsumer The consumer to which imprints will be produced after being generated.
 	 */
-	public FileSystemDatimprinter(@Nonnull final Consumer<PathImprint> imprintConsumer) {
+	public PathImprintGenerator(@Nonnull final Consumer<PathImprint> imprintConsumer) {
 		this(newFixedThreadPool(Runtime.getRuntime().availableProcessors()), newSingleThreadExecutor(runnable -> {
 			final Thread thread = Executors.defaultThreadFactory().newThread(runnable);
 			thread.setPriority(Thread.MAX_PRIORITY);
@@ -116,7 +116,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * Same-executor constructor with no consumer.
 	 * @param executor The executor for traversing and generating imprints; and producing imprints. May or may not be an instance of {@link ExecutorService}.
 	 */
-	public FileSystemDatimprinter(@Nonnull final Executor executor) {
+	public PathImprintGenerator(@Nonnull final Executor executor) {
 		this(executor, executor); //ignore produced imprints
 	}
 
@@ -127,7 +127,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * @param produceExecutor The executor for producing imprints; may or may not be an instance of {@link ExecutorService}, and may or may not be the same
 	 *          executor as the generate executor.
 	 */
-	public FileSystemDatimprinter(@Nonnull final Executor generateExecutor, @Nonnull final Executor produceExecutor) {
+	public PathImprintGenerator(@Nonnull final Executor generateExecutor, @Nonnull final Executor produceExecutor) {
 		this(generateExecutor, produceExecutor, __ -> {}); //ignore produced imprints
 	}
 
@@ -139,7 +139,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 *          executor as the generate executor.
 	 * @param imprintConsumer The consumer to which imprints will be produced after being generated.
 	 */
-	public FileSystemDatimprinter(@Nonnull final Executor generateExecutor, @Nonnull final Executor produceExecutor,
+	public PathImprintGenerator(@Nonnull final Executor generateExecutor, @Nonnull final Executor produceExecutor,
 			@Nonnull final Consumer<PathImprint> imprintConsumer) {
 		this.generateExecutor = requireNonNull(generateExecutor);
 		this.produceExecutor = requireNonNull(produceExecutor);
@@ -150,14 +150,14 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	 * Builder constructor.
 	 * @param builder The builder providing the specification for creating a new instance.
 	 */
-	protected FileSystemDatimprinter(@Nonnull final Builder builder) {
+	protected PathImprintGenerator(@Nonnull final Builder builder) {
 		this.generateExecutor = builder.determineGenerateExecutor();
 		this.produceExecutor = builder.determineProduceExecutor();
 		this.imprintConsumer = builder.imprintConsumer;
 	}
 
-	/** @return A new builder for specifying a new {@link FileSystemDatimprinter}. */
-	public static FileSystemDatimprinter.Builder builder() {
+	/** @return A new builder for specifying a new {@link PathImprintGenerator}. */
+	public static PathImprintGenerator.Builder builder() {
 		return new Builder();
 	}
 
@@ -401,7 +401,7 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 	}
 
 	/**
-	 * Builder for specification for creating a {@link FileSystemDatimprinter}.
+	 * Builder for specification for creating a {@link PathImprintGenerator}.
 	 * @author Garret Wilson
 	 */
 	public static class Builder {
@@ -532,9 +532,9 @@ public class FileSystemDatimprinter implements Closeable, Clogged {
 			return this;
 		}
 
-		/** @return A new instance of the datimprinter based upon the current builder configuration. */
-		public FileSystemDatimprinter build() {
-			return new FileSystemDatimprinter(this);
+		/** @return A new instance of the imprint generator based upon the current builder configuration. */
+		public PathImprintGenerator build() {
+			return new PathImprintGenerator(this);
 		}
 
 		/**
