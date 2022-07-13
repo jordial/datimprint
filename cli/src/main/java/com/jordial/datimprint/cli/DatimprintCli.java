@@ -16,8 +16,10 @@
 
 package com.jordial.datimprint.cli;
 
+import static com.globalmentor.collections.iterators.Iterators.*;
 import static com.globalmentor.java.Characters.*;
 import static java.nio.charset.StandardCharsets.*;
+import static java.util.Collections.*;
 import static org.fusesource.jansi.Ansi.*;
 import static org.zalando.fauxpas.FauxPas.*;
 
@@ -27,6 +29,8 @@ import java.nio.file.*;
 import java.time.Duration;
 import java.util.function.Consumer;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.*;
@@ -167,7 +171,40 @@ public class DatimprintCli extends BaseCliApplication {
 	 */
 	private class StatusPrinter implements PathImprintGeneratorListener {
 
-		final AtomicLong counter = new AtomicLong(0);
+		/** The count of generated imprints. */
+		private final AtomicLong counter = new AtomicLong(0);
+
+		/**
+		 * The file content fingerprints currently being generated. This is not expected to grow very large, as the number is limited to large extent by the number
+		 * of threads used in the thread pool.
+		 */
+		private final Set<Path> fileContentFingerprintsGenerating = newSetFromMap(new ConcurrentHashMap<>());
+
+		private volatile Optional<Path> optionalStatusFile = Optional.empty();
+
+		/**
+		 * Gets the file marked as the "current" one generating a hash the purpose of status display. This is the file to display in the status, even though there
+		 * might be several files actually having their file contents generated.
+		 * @implSpec This method updates the record of the current file dynamically, based upon whether the file is actually still being hashed or not. If it is
+		 *           not, or if there is no record of the current file to use, another file is determined by choosing any from the set of currently generating
+		 *           fingerprint files.
+		 * @implSpec This implementation only locks as needed, and when it does it locks on the set of files being hashed.
+		 * @return The file marked has currently having its content fingerprint generated for status purposes, if any.
+		 */
+		protected Optional<Path> findStatusFile() {
+			Optional<Path> foundStatusFile = optionalStatusFile;
+			//if no file has been chosen, or it is no longer actually being hashed
+			if(!optionalStatusFile.map(fileContentFingerprintsGenerating::contains).orElse(false)) {
+				synchronized(fileContentFingerprintsGenerating) {
+					foundStatusFile = optionalStatusFile; //check again under the lock
+					if(!optionalStatusFile.map(fileContentFingerprintsGenerating::contains).orElse(false)) {
+						foundStatusFile = findNext(fileContentFingerprintsGenerating.iterator()); //chose an arbitrary file for the status
+						optionalStatusFile = foundStatusFile; //update the record of the status file for next time
+					}
+				}
+			}
+			return foundStatusFile;
+		}
 
 		/**
 		 * {@inheritDoc}
@@ -183,12 +220,14 @@ public class DatimprintCli extends BaseCliApplication {
 
 		@Override
 		public void beforeGenerateFileContentFingerprint(final Path file) {
-			//TODO
+			fileContentFingerprintsGenerating.add(file);
+			printStatus();
 		}
 
 		@Override
 		public void afterGenerateFileContentFingerprint(final Path file) {
-			//TODO
+			fileContentFingerprintsGenerating.remove(file);
+			printStatus();
 		}
 
 		@Override
@@ -203,7 +242,7 @@ public class DatimprintCli extends BaseCliApplication {
 			if(!isQuiet()) {
 				//TODO create utility for shortening path
 				//TODO find a way to overwrite the previous path; probably pad all the filenames if needed
-				System.err.print("%d | %s\r".formatted(counter.get(), "TODO.txt"));
+				System.err.print("%d | %s\r".formatted(counter.get(), findStatusFile().map(Path::toString).orElse("")));
 			}
 		}
 
