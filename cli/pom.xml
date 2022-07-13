@@ -32,17 +32,6 @@
 			<groupId>com.jordial.datimprint</groupId>
 			<artifactId>datimprint-file</artifactId>
 		</dependency>
-
-		<dependency>
-			<groupId>io.clogr</groupId>
-			<artifactId>clogr-logback-provider</artifactId>
-		</dependency>
-
-		<dependency>
-			<groupId>org.tuxdude.logback.extensions</groupId>
-			<artifactId>logback-colorizer</artifactId>
-			<version>1.0.1</version>
-		</dependency>
 	</dependencies>
 
 	<build>
