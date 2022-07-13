@@ -104,7 +104,7 @@ public class DatimprintCli extends BaseCliApplication {
 				writeImprintHeader(writer, lineSeparator);
 				final AtomicLong counter = new AtomicLong(0);
 				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> writeImprint(writer, imprint, counter.incrementAndGet(), lineSeparator));
-				try (final StatusPrinter statusPrinter = new StatusPrinter()) {
+				try (final StatusPrinter statusPrinter = new StatusPrinter(startTimeNs)) {
 					final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer);
 					if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 						imprintGeneratorBuilder.withListener(statusPrinter);
@@ -185,6 +185,16 @@ public class DatimprintCli extends BaseCliApplication {
 		/** The count of generated imprints. */
 		private final AtomicLong counter = new AtomicLong(0);
 
+		private final long startTimeNs;
+
+		/**
+		 * Start time constructor.
+		 * @param startTimeNs The time the process started in nanoseconds.
+		 */
+		public StatusPrinter(final long startTimeNs) {
+			this.startTimeNs = startTimeNs;
+		}
+
 		/**
 		 * The file content fingerprints currently being generated. This is not expected to grow very large, as the number is limited to large extent by the number
 		 * of threads used in the thread pool.
@@ -227,11 +237,13 @@ public class DatimprintCli extends BaseCliApplication {
 		}
 
 		/**
-		 * Prints the current status, including the count and current status file.
+		 * Prints the current status, including the elapsed time, count, and current status file.
 		 * @see #findStatusFile()
 		 */
 		protected synchronized void printStatus() {
-			final String status = "%d | %s".formatted(counter.get(), findStatusFile().map(Path::toString).orElse(""));
+			final Duration elapsed = Duration.ofNanos(System.nanoTime() - startTimeNs);
+			final String status = "%d:%02d:%02d | %d | %s".formatted(elapsed.toHours(), elapsed.toMinutesPart(), elapsed.toSecondsPart(), counter.get(),
+					findStatusFile().map(Path::toString).orElse(""));
 			if(!status.equals(lastStatus)) { //if the status is different than the last time (or there was no previous status)
 				//We only have to pad to the last actual status, _not_ to the _padded_ last status, because
 				//if the last status was printed padded, it would have erased the previous status already.
