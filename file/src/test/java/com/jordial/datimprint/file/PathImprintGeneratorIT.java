@@ -16,7 +16,7 @@
 
 package com.jordial.datimprint.file;
 
-import static com.jordial.datimprint.file.FileSystemDatimprinter.FINGERPRINT_ALGORITHM;
+import static com.jordial.datimprint.file.PathImprintGenerator.FINGERPRINT_ALGORITHM;
 import static java.nio.file.Files.*;
 import static java.util.stream.Collectors.toMap;
 import static org.hamcrest.MatcherAssert.*;
@@ -34,53 +34,53 @@ import org.junit.jupiter.api.io.TempDir;
 import com.globalmentor.security.Hash;
 
 /**
- * Integration tests of {@link FileSystemDatimprinter}.
- * @implSpec These tests use a datimprinter which performs all "asynchronous" operations in the calling thread, simulating synchronous operation.
+ * Integration tests of {@link PathImprintGenerator}.
+ * @implSpec These tests use a imprint generator which performs all "asynchronous" operations in the calling thread, simulating synchronous operation.
  * @author Garret Wilson
  */
-public class FileSystemDatimprinterIT {
+public class PathImprintGeneratorIT {
 
-	private FileSystemDatimprinter testDatimprinter;
+	private PathImprintGenerator testImprintGenerator;
 	private List<PathImprint> testProducedImprints;
 
 	@BeforeEach
-	void setupDatimprinter() {
+	void setupImprintGenerator() {
 		testProducedImprints = new CopyOnWriteArrayList<>(); //to allow for future multithreaded production
-		testDatimprinter = FileSystemDatimprinter.builder().withExecutor(Runnable::run).withImprintConsumer(testProducedImprints::add).build();
+		testImprintGenerator = PathImprintGenerator.builder().withExecutor(Runnable::run).withImprintConsumer(testProducedImprints::add).build();
 	}
 
 	@AfterEach
-	void teardownDatimprinter() throws IOException {
-		testDatimprinter.close();
+	void teardownImprintGenerator() throws IOException {
+		testImprintGenerator.close();
 		testProducedImprints.clear();
 	}
 
 	/**
 	 * Tests generating and producing an imprint for a multilevel tree with files and directories, intending to capture the most common types of directory/file
 	 * combinations encountered (e.g. empty directories, nested directories, empty files, binary files).
-	 * @see FileSystemDatimprinter#produceImprint(Path)
+	 * @see PathImprintGenerator#produceImprint(Path)
 	 */
 	@Test
 	void testProduceImprintSmokeTest(@TempDir final Path tempDir) throws IOException {
 		final Path exampleTextFile = writeString(tempDir.resolve("example.txt"), "stuff"); //`/example.txt`: "stuff"
-		final PathImprint exampleTextFileImprint = testDatimprinter.generateImprintAsync(exampleTextFile).join();
+		final PathImprint exampleTextFileImprint = testImprintGenerator.generateImprintAsync(exampleTextFile).join();
 		final byte[] exampleBytes = new byte[] {0x03, (byte)0xFE, 0x02, 0x01, (byte)0xFF, (byte)0xAB, (byte)0x98, 0x00, 0x12};
 		final Path exampleBinaryFile = write(tempDir.resolve("example.bin"), exampleBytes); //`/example.bin`: 0x03FE0201FFAB980012
-		final PathImprint exampleBinaryFileImprint = testDatimprinter.generateImprintAsync(exampleBinaryFile).join();
+		final PathImprint exampleBinaryFileImprint = testImprintGenerator.generateImprintAsync(exampleBinaryFile).join();
 
 		final Path foobarDirectory = createDirectory(tempDir.resolve("foobar")); //`/foobar/`
 		final Path fooFile = writeString(foobarDirectory.resolve("foo.txt"), "foo"); //`/foobar/foo.txt`: "foo"
-		final PathImprint fooFileImprint = testDatimprinter.generateImprintAsync(fooFile).join();
+		final PathImprint fooFileImprint = testImprintGenerator.generateImprintAsync(fooFile).join();
 		final Path barFile = writeString(foobarDirectory.resolve("bar.txt"), "bar"); //`/foobar/bar.txt`: "bar"
-		final PathImprint barFileImprint = testDatimprinter.generateImprintAsync(barFile).join();
+		final PathImprint barFileImprint = testImprintGenerator.generateImprintAsync(barFile).join();
 
 		final Path emptyDirectory = createDirectory(tempDir.resolve("empty")); //`/empty/`
 
 		final Path level1Directory = createDirectory(tempDir.resolve("level-1")); //`/level-1/`
 		final Path level1ThisFile = writeString(level1Directory.resolve("this.txt"), "level-1-this"); //`/level1/this.txt`: "level-1-this"
-		final PathImprint level1ThisFileImprint = testDatimprinter.generateImprintAsync(level1ThisFile).join();
+		final PathImprint level1ThisFileImprint = testImprintGenerator.generateImprintAsync(level1ThisFile).join();
 		final Path level1EmptyFile = writeString(level1Directory.resolve("empty.bin"), ""); //`/level-1/empty.bin`: ""
-		final PathImprint level1EmptyFileImprint = testDatimprinter.generateImprintAsync(level1EmptyFile).join();
+		final PathImprint level1EmptyFileImprint = testImprintGenerator.generateImprintAsync(level1EmptyFile).join();
 
 		final Path level2aDirectory = createDirectory(level1Directory.resolve("level-2a")); //`/level-1/level-2a/` (empty)
 
@@ -88,7 +88,7 @@ public class FileSystemDatimprinterIT {
 
 		final Path level3Directory = createDirectory(level2bDirectory.resolve("level-3")); //`/level-1/level-2b/level-3/`
 		final Path level3ThatFile = writeString(level3Directory.resolve("that.txt"), "level-3-that"); //`/level-1/level-2b/level-3/that.txt`: "level-3-that"
-		final PathImprint level3ThatFileImprint = testDatimprinter.generateImprintAsync(level3ThatFile).join();
+		final PathImprint level3ThatFileImprint = testImprintGenerator.generateImprintAsync(level3ThatFile).join();
 
 		final PathImprint level3DirectoryImprint = PathImprint.forDirectory(level3Directory, getLastModifiedTime(level3Directory),
 				FINGERPRINT_ALGORITHM.hash(level3ThatFileImprint.contentFingerprint()), FINGERPRINT_ALGORITHM.hash(level3ThatFileImprint.fingerprint()),
@@ -115,7 +115,7 @@ public class FileSystemDatimprinterIT {
 				FINGERPRINT_ALGORITHM.hash(emptyDirectoryImprint.fingerprint(), exampleBinaryFileImprint.fingerprint(), exampleTextFileImprint.fingerprint(),
 						foobarDirectoryImprint.fingerprint(), level1DirectoryImprint.fingerprint()),
 				FINGERPRINT_ALGORITHM);
-		assertThat(testDatimprinter.produceImprint(tempDir), is(tempDirectoryImprint));
+		assertThat(testImprintGenerator.produceImprint(tempDir), is(tempDirectoryImprint));
 		assertThat(testProducedImprints,
 				containsInAnyOrder(tempDirectoryImprint, exampleTextFileImprint, exampleBinaryFileImprint, foobarDirectoryImprint, fooFileImprint, barFileImprint,
 						emptyDirectoryImprint, level1DirectoryImprint, level1ThisFileImprint, level1EmptyFileImprint, level2aDirectoryImprint, level2bDirectoryImprint,
@@ -124,29 +124,29 @@ public class FileSystemDatimprinterIT {
 
 	//files
 
-	/** @see FileSystemDatimprinter#generateFileContentFingerprintAsync(Path) */
+	/** @see PathImprintGenerator#generateFileContentFingerprintAsync(Path) */
 	@Test
 	void testGenerateFileContentFingerprintAsyncText(@TempDir final Path tempDir) throws IOException {
 		final String contents = "fooBar";
 		final Path file = writeString(tempDir.resolve("foo.bar"), contents);
 		final Hash contentFingerprint = FINGERPRINT_ALGORITHM.hash(contents);
 
-		assertThat(testDatimprinter.generateFileContentFingerprintAsync(file).join(), is(contentFingerprint));
+		assertThat(testImprintGenerator.generateFileContentFingerprintAsync(file).join(), is(contentFingerprint));
 		assertThat(testProducedImprints, is(empty()));
 	}
 
-	/** @see FileSystemDatimprinter#generateFileContentFingerprintAsync(Path) */
+	/** @see PathImprintGenerator#generateFileContentFingerprintAsync(Path) */
 	@Test
 	void testGenerateFileContentFingerprintAsyncBinary(@TempDir final Path tempDir) throws IOException {
 		final byte[] contents = new byte[] {0x03, (byte)0xFE, 0x02, 0x01, (byte)0xFF, (byte)0xAB, (byte)0x98, 0x00, 0x12};
 		final Path file = write(tempDir.resolve("foo.bar"), contents);
 		final Hash contentFingerprint = FINGERPRINT_ALGORITHM.hash(contents);
 
-		assertThat(testDatimprinter.generateFileContentFingerprintAsync(file).join(), is(contentFingerprint));
+		assertThat(testImprintGenerator.generateFileContentFingerprintAsync(file).join(), is(contentFingerprint));
 		assertThat(testProducedImprints, is(empty()));
 	}
 
-	/** @see FileSystemDatimprinter#generateImprintAsync(Path) */
+	/** @see PathImprintGenerator#generateImprintAsync(Path) */
 	@Test
 	void testGenerateImprintAsyncFile(@TempDir final Path tempDir) throws IOException {
 		final String filename = "foo.bar";
@@ -155,7 +155,7 @@ public class FileSystemDatimprinterIT {
 		final FileTime modifiedAt = getLastModifiedTime(file);
 		final Hash contentFingerprint = FINGERPRINT_ALGORITHM.hash(content);
 
-		final PathImprint imprint = testDatimprinter.generateImprintAsync(file).join();
+		final PathImprint imprint = testImprintGenerator.generateImprintAsync(file).join();
 		assertThat(imprint.path(), is(file));
 		assertThat(imprint.modifiedAt(), is(modifiedAt));
 		assertThat(imprint.contentFingerprint(), is(contentFingerprint));
@@ -163,7 +163,7 @@ public class FileSystemDatimprinterIT {
 		assertThat(testProducedImprints, is(empty()));
 	}
 
-	/** @see FileSystemDatimprinter#produceImprintAsync(Path) */
+	/** @see PathImprintGenerator#produceImprintAsync(Path) */
 	@Test
 	void testProduceImprintAsyncFile(@TempDir final Path tempDir) throws IOException {
 		final String filename = "foo.bar";
@@ -172,7 +172,7 @@ public class FileSystemDatimprinterIT {
 		final FileTime modifiedAt = getLastModifiedTime(file);
 		final Hash contentFingerprint = FINGERPRINT_ALGORITHM.hash(content);
 
-		final PathImprint imprint = testDatimprinter.produceImprintAsync(file).join();
+		final PathImprint imprint = testImprintGenerator.produceImprintAsync(file).join();
 		assertThat(imprint.path(), is(file));
 		assertThat(imprint.modifiedAt(), is(modifiedAt));
 		assertThat(imprint.contentFingerprint(), is(contentFingerprint));
@@ -182,7 +182,7 @@ public class FileSystemDatimprinterIT {
 
 	//directories
 
-	/** @see FileSystemDatimprinter#generateDirectoryContentChildrenFingerprintsAsync(Path) */
+	/** @see PathImprintGenerator#generateDirectoryContentChildrenFingerprintsAsync(Path) */
 	@Test
 	void testGenerateDirectoryContentFingerprintAsyncEmpty(@TempDir final Path tempDir) throws IOException {
 		final Path directory = createDirectory(tempDir.resolve("foobar"));
@@ -191,12 +191,12 @@ public class FileSystemDatimprinterIT {
 		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.emptyHash();
 		final Hash directoryChildrenFingerprint = FINGERPRINT_ALGORITHM.emptyHash();
 
-		assertThat(testDatimprinter.generateDirectoryContentChildrenFingerprintsAsync(directory).join(),
-				is(new FileSystemDatimprinter.DirectoryContentChildrenFingerprints(directoryContentFingerprint, directoryChildrenFingerprint)));
+		assertThat(testImprintGenerator.generateDirectoryContentChildrenFingerprintsAsync(directory).join(),
+				is(new PathImprintGenerator.DirectoryContentChildrenFingerprints(directoryContentFingerprint, directoryChildrenFingerprint)));
 		assertThat(testProducedImprints, is(empty()));
 	}
 
-	/** @see FileSystemDatimprinter#generateDirectoryContentChildrenFingerprintsAsync(Path) */
+	/** @see PathImprintGenerator#generateDirectoryContentChildrenFingerprintsAsync(Path) */
 	@Test
 	void testGenerateDirectoryContentChildrenFingerprintsAsyncTwoChildFiles(@TempDir final Path tempDir) throws IOException {
 		final Path directory = createDirectory(tempDir.resolve("foobar"));
@@ -219,12 +219,12 @@ public class FileSystemDatimprinterIT {
 		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.hash(barContentFingerprint, fooContentFingerprint);
 		final Hash directoryChildrenFingerprint = FINGERPRINT_ALGORITHM.hash(barImprint.fingerprint(), fooImprint.fingerprint());
 
-		assertThat(testDatimprinter.generateDirectoryContentChildrenFingerprintsAsync(directory).join(),
-				is(new FileSystemDatimprinter.DirectoryContentChildrenFingerprints(directoryContentFingerprint, directoryChildrenFingerprint)));
+		assertThat(testImprintGenerator.generateDirectoryContentChildrenFingerprintsAsync(directory).join(),
+				is(new PathImprintGenerator.DirectoryContentChildrenFingerprints(directoryContentFingerprint, directoryChildrenFingerprint)));
 		assertThat(testProducedImprints, containsInAnyOrder(fooImprint, barImprint));
 	}
 
-	/** @see FileSystemDatimprinter#produceChildImprintsAsync(Path) */
+	/** @see PathImprintGenerator#produceChildImprintsAsync(Path) */
 	@Test
 	void testProduceChildImprintsAsync(@TempDir final Path tempDir) throws IOException {
 		final Path directory = createDirectory(tempDir.resolve("foobar"));
@@ -243,7 +243,7 @@ public class FileSystemDatimprinterIT {
 		final Hash barContentFingerprint = FINGERPRINT_ALGORITHM.hash(barFileContents);
 		final PathImprint barImprint = PathImprint.forFile(barFile, barModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
 
-		final Map<Path, PathImprint> childImprintsByPath = testDatimprinter.produceChildImprintsAsync(directory).join().entrySet().stream()
+		final Map<Path, PathImprint> childImprintsByPath = testImprintGenerator.produceChildImprintsAsync(directory).join().entrySet().stream()
 				.collect(toMap(Map.Entry::getKey, entry -> entry.getValue().join()));
 		assertThat("Produced child imprints were as expected.", testProducedImprints, containsInAnyOrder(fooImprint, barImprint));
 		assertThat("Produced child imprints were returned.", childImprintsByPath.values(), containsInAnyOrder(testProducedImprints.toArray()));
@@ -251,7 +251,7 @@ public class FileSystemDatimprinterIT {
 				is(childImprintByPath.getValue().path())));
 	}
 
-	/** @see FileSystemDatimprinter#generateImprintAsync(Path) */
+	/** @see PathImprintGenerator#generateImprintAsync(Path) */
 	@Test
 	void testGenerateImprintAsyncDirectory(@TempDir final Path tempDir) throws IOException {
 		final Path directory = createDirectory(tempDir.resolve("foobar"));
@@ -276,7 +276,7 @@ public class FileSystemDatimprinterIT {
 		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.hash(barContentFingerprint, fooContentFingerprint);
 		final Hash directoryChildrenFingerprint = FINGERPRINT_ALGORITHM.hash(barImprint.fingerprint(), fooImprint.fingerprint());
 
-		final PathImprint imprint = testDatimprinter.generateImprintAsync(directory).join();
+		final PathImprint imprint = testImprintGenerator.generateImprintAsync(directory).join();
 		assertThat(imprint.path(), is(directory));
 		assertThat(imprint.modifiedAt(), is(directoryModifiedAt));
 		assertThat(imprint.contentFingerprint(), is(directoryContentFingerprint));
@@ -285,7 +285,7 @@ public class FileSystemDatimprinterIT {
 		assertThat(testProducedImprints, containsInAnyOrder(fooImprint, barImprint));
 	}
 
-	/** @see FileSystemDatimprinter#produceImprintAsync(Path) */
+	/** @see PathImprintGenerator#produceImprintAsync(Path) */
 	@Test
 	void testProduceImprintAsyncDirectory(@TempDir final Path tempDir) throws IOException {
 		final Path directory = createDirectory(tempDir.resolve("foobar"));
@@ -310,7 +310,7 @@ public class FileSystemDatimprinterIT {
 		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.hash(barContentFingerprint, fooContentFingerprint);
 		final Hash directoryChildrenFingerprint = FINGERPRINT_ALGORITHM.hash(barImprint.fingerprint(), fooImprint.fingerprint());
 
-		final PathImprint imprint = testDatimprinter.produceImprintAsync(directory).join();
+		final PathImprint imprint = testImprintGenerator.produceImprintAsync(directory).join();
 		assertThat(imprint.path(), is(directory));
 		assertThat(imprint.modifiedAt(), is(directoryModifiedAt));
 		assertThat(imprint.contentFingerprint(), is(directoryContentFingerprint));

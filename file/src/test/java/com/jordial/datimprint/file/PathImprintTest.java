@@ -16,7 +16,7 @@
 
 package com.jordial.datimprint.file;
 
-import static com.jordial.datimprint.file.FileSystemDatimprinter.FINGERPRINT_ALGORITHM;
+import static com.jordial.datimprint.file.PathImprintGenerator.FINGERPRINT_ALGORITHM;
 import static org.hamcrest.MatcherAssert.*;
 import static org.hamcrest.Matchers.*;
 import static org.mockito.Mockito.*;
