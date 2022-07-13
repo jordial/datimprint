@@ -20,6 +20,7 @@ import static com.globalmentor.collections.iterators.Iterators.*;
 import static com.globalmentor.java.Characters.*;
 import static java.nio.charset.StandardCharsets.*;
 import static java.util.Collections.*;
+import static java.util.concurrent.Executors.*;
 import static org.fusesource.jansi.Ansi.*;
 import static org.zalando.fauxpas.FauxPas.*;
 
@@ -30,7 +31,7 @@ import java.time.Duration;
 import java.util.function.Consumer;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.*;
@@ -103,11 +104,15 @@ public class DatimprintCli extends BaseCliApplication {
 				writeImprintHeader(writer, lineSeparator);
 				final AtomicLong counter = new AtomicLong(0);
 				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> writeImprint(writer, imprint, counter.incrementAndGet(), lineSeparator));
-				final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer)
-						.withListener(new StatusPrinter());
-				argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
-				try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
-					imprintGenerator.produceImprint(argDataPath);
+				try (final StatusPrinter statusPrinter = new StatusPrinter()) {
+					final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer);
+					if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
+						imprintGeneratorBuilder.withListener(statusPrinter);
+					}
+					argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
+					try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
+						imprintGenerator.produceImprint(argDataPath);
+					}
 				}
 			} finally {
 				if(outputStream == System.out) { //don't close the writer if we are writing to stdout
@@ -156,20 +161,26 @@ public class DatimprintCli extends BaseCliApplication {
 	}
 
 	/**
-	 * Implementation of a path imprint generator listener that prints status information as the generator traverses the tree and generates imprints.
+	 * Implementation of a path imprint generator listener that prints status information to {@link System#err} as the generator traverses the tree and generates
+	 * imprints.
 	 * <p>
 	 * If {@link DatimprintCli#isVerbose()} is enabled, directories will be printed as they are entered.
 	 * </p>
 	 * <p>
 	 * The generated imprint count (which may include imprints that are still in the process of being generated) and information about the current file hash being
-	 * generated are printed unless {@link DatimprintCli#isQuiet()} is enabled.
+	 * generated are printed.
+	 * </p>
+	 * <p>
+	 * This status printer must be closed after it is no longer in use.
 	 * </p>
 	 * @implNote The printed count is based upon the traversal/generation status, and is independent of the line numbers placed in the file.
-	 * @implNote Because this class uses targeted synchronization to avoid contention, it is not guaranteed that the status will be printed in the order of calls.
-	 *           In particular it is possible, although not likely, for the "count" part of the status to be out of order for subsequent calls.
+	 * @implNote This implementation uses a separate, single-threaded executor for printing to reduce contention with generation and prevent race conditions in
+	 *           status consistency.
 	 * @author Garret Wilson
 	 */
-	private class StatusPrinter implements PathImprintGeneratorListener {
+	private class StatusPrinter implements PathImprintGeneratorListener, Closeable {
+
+		private final ExecutorService printExecutorService = newSingleThreadExecutor();
 
 		/** The count of generated imprints. */
 		private final AtomicLong counter = new AtomicLong(0);
@@ -180,30 +191,62 @@ public class DatimprintCli extends BaseCliApplication {
 		 */
 		private final Set<Path> fileContentFingerprintsGenerating = newSetFromMap(new ConcurrentHashMap<>());
 
-		private volatile Optional<Path> optionalStatusFile = Optional.empty();
+		private Optional<Path> optionalStatusFile = Optional.empty();
 
 		/**
-		 * Gets the file marked as the "current" one generating a hash the purpose of status display. This is the file to display in the status, even though there
+		 * Finds a file marked as the "current" one generating a hash the purpose of status display. This is the file to display in the status, even though there
 		 * might be several files actually having their file contents generated.
 		 * @implSpec This method updates the record of the current file dynamically, based upon whether the file is actually still being hashed or not. If it is
 		 *           not, or if there is no record of the current file to use, another file is determined by choosing any from the set of currently generating
 		 *           fingerprint files.
-		 * @implSpec This implementation only locks as needed, and when it does it locks on the set of files being hashed.
 		 * @return The file marked has currently having its content fingerprint generated for status purposes, if any.
 		 */
-		protected Optional<Path> findStatusFile() {
+		protected synchronized Optional<Path> findStatusFile() {
 			Optional<Path> foundStatusFile = optionalStatusFile;
 			//if no file has been chosen, or it is no longer actually being hashed
 			if(!optionalStatusFile.map(fileContentFingerprintsGenerating::contains).orElse(false)) {
-				synchronized(fileContentFingerprintsGenerating) {
-					foundStatusFile = optionalStatusFile; //check again under the lock
-					if(!optionalStatusFile.map(fileContentFingerprintsGenerating::contains).orElse(false)) {
-						foundStatusFile = findNext(fileContentFingerprintsGenerating.iterator()); //chose an arbitrary file for the status
-						optionalStatusFile = foundStatusFile; //update the record of the status file for next time
-					}
-				}
+				foundStatusFile = findNext(fileContentFingerprintsGenerating.iterator()); //chose an arbitrary file for the status
+				optionalStatusFile = foundStatusFile; //update the record of the status file for next time
 			}
 			return foundStatusFile;
+		}
+
+		/** Keeps track of the last status string to prevent unnecessary re-printing and to determine padding. */
+		@Nullable
+		private String lastStatus = null;
+
+		/**
+		 * Prints the given directory and then prints the status.
+		 * @implSpec The record of the last status will be cleared.
+		 * @param directory The directory to print.
+		 */
+		protected synchronized void printDirectory(@Nonnull final Path directory) {
+			final int padWidth = lastStatus != null ? lastStatus.length() : 1; //pad at least to a nonzero value to avoid a MissingFormatWidthException
+			System.err.println(("\r%-" + padWidth + "s").formatted(directory.toAbsolutePath()));
+			lastStatus = null; //we're skipping to another line for further status
+		}
+
+		/**
+		 * Prints the current status, including the count and current status file.
+		 * @see #findStatusFile()
+		 */
+		protected synchronized void printStatus() {
+			final String status = "%d | %s".formatted(counter.get(), findStatusFile().map(Path::toString).orElse(""));
+			if(!status.equals(lastStatus)) { //if the status is different than the last time (or there was no previous status)
+				//We only have to pad to the last actual status, _not_ to the _padded_ last status, because
+				//if the last status was printed padded, it would have erased the previous status already.
+				//In other words, padding only needs to be added once to overwrite each previous status.
+				final int padWidth = lastStatus != null ? lastStatus.length() : 1; //pad at least to a nonzero value to avoid a MissingFormatWidthException
+				System.err.print(("\r%-" + padWidth + "s").formatted(status));
+				lastStatus = status; //update the last status for checking the next time
+			}
+		}
+
+		/** Clears the current status by blanking out the status and returning the cursor to the beginning of the line. */
+		protected synchronized void clearStatus() {
+			final int padWidth = lastStatus != null ? lastStatus.length() : 1; //pad at least to a nonzero value to avoid a MissingFormatWidthException
+			System.err.print(("\r%-" + padWidth + "s\r").formatted(""));
+			lastStatus = null;
 		}
 
 		/**
@@ -214,35 +257,50 @@ public class DatimprintCli extends BaseCliApplication {
 		@Override
 		public void onEnterDirectory(final Path directory) {
 			if(isVerbose()) {
-				System.err.println(directory.toAbsolutePath());
+				printExecutorService.execute(() -> {
+					printDirectory(directory);
+					printStatus();
+				});
 			}
 		}
 
 		@Override
 		public void beforeGenerateFileContentFingerprint(final Path file) {
 			fileContentFingerprintsGenerating.add(file);
-			printStatus();
+			printExecutorService.execute(this::printStatus);
 		}
 
 		@Override
 		public void afterGenerateFileContentFingerprint(final Path file) {
 			fileContentFingerprintsGenerating.remove(file);
-			printStatus();
+			printExecutorService.execute(this::printStatus);
 		}
 
 		@Override
 		public void onGenerateImprint(final Path path) {
 			counter.incrementAndGet();
-			printStatus();
-
+			printExecutorService.execute(this::printStatus);
 		}
 
-		//TODO doc
-		protected void printStatus() {
-			if(!isQuiet()) {
-				//TODO create utility for shortening path
-				//TODO find a way to overwrite the previous path; probably pad all the filenames if needed
-				System.err.print("%d | %s\r".formatted(counter.get(), findStatusFile().map(Path::toString).orElse("")));
+		/**
+		 * {@inheritDoc}
+		 * @implSpec This implementation clears the status and then shuts down the executor used for printing the status.
+		 * @throws IOException If the status print executor could not be shut down.
+		 */
+		@Override
+		public void close() throws IOException {
+			printExecutorService.execute(this::clearStatus);
+			printExecutorService.shutdown();
+			try {
+				if(!printExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
+					printExecutorService.shutdownNow();
+					if(!printExecutorService.awaitTermination(3, TimeUnit.SECONDS)) {
+						throw new IOException("Status printing service not shut down properly.");
+					}
+				}
+			} catch(final InterruptedException interruptedException) {
+				printExecutorService.shutdownNow();
+				Thread.currentThread().interrupt();
 			}
 		}
 
