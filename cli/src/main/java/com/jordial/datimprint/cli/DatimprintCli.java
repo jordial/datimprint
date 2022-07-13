@@ -35,13 +35,10 @@ import org.fusesource.jansi.Ansi;
 import org.slf4j.Logger;
 import org.slf4j.event.Level;
 
-import com.github.dtmo.jfiglet.*;
 import com.globalmentor.application.*;
 import com.globalmentor.java.*;
 import com.jordial.datimprint.file.*;
 
-import io.confound.config.*;
-import io.confound.config.file.ResourcesConfigurationManager;
 import picocli.CommandLine.*;
 
 /**
@@ -65,29 +62,6 @@ public class DatimprintCli extends BaseCliApplication {
 	 */
 	public static void main(@Nonnull final String[] args) {
 		Application.start(new DatimprintCli(args));
-	}
-
-	/**
-	 * Logs startup app information, including application banner, name, and version.
-	 * @see #getLogger()
-	 * @see Level#INFO
-	 * @throws ConfigurationException if some configuration information isn't present.
-	 */
-	protected void logAppInfo() {
-		final FigletRenderer figletRenderer;
-		final Configuration appConfiguration;
-		try {
-			appConfiguration = ResourcesConfigurationManager.loadConfigurationForClass(getClass())
-					.orElseThrow(ResourcesConfigurationManager::createConfigurationNotFoundException);
-			figletRenderer = new FigletRenderer(FigFontResources.loadFigFontResource(FigFontResources.BIG_FLF));
-		} catch(final IOException ioException) {
-			throw new ConfigurationException(ioException);
-		}
-		final String appName = appConfiguration.getString(CONFIG_KEY_NAME);
-		final String appVersion = appConfiguration.getString(CONFIG_KEY_VERSION);
-		final Logger logger = getLogger();
-		logger.info("\n{}{}{}", ansi().bold().fg(Ansi.Color.GREEN), figletRenderer.renderText(appName), ansi().reset());
-		logger.info("{} {}\n", appName, appVersion);
 	}
 
 	/**
@@ -124,8 +98,9 @@ public class DatimprintCli extends BaseCliApplication {
 			try {
 				writeImprintHeader(writer, lineSeparator);
 				final AtomicLong counter = new AtomicLong(0);
-				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> writeImprint(writer, imprint, counter, lineSeparator));
-				final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer);
+				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> writeImprint(writer, imprint, counter.incrementAndGet(), lineSeparator));
+				final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer)
+						.withListener(new StatusPrinter());
 				argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
 				try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
 					imprintGenerator.produceImprint(argDataPath);
@@ -165,15 +140,73 @@ public class DatimprintCli extends BaseCliApplication {
 	 * Prints the header of an imprint output. The counter will be incremented before printing.
 	 * @param writer The writer for writing the imprint.
 	 * @param imprint The imprint to print.
-	 * @param counter The counter maintaining the number of imprints already printed.
+	 * @param number The number of the line being written.
 	 * @param lineSeparator The end-of-line character.
 	 * @throws IOException if an I/O error occurs writing the data.
 	 */
-	protected void writeImprint(@Nonnull final Writer writer, @Nonnull final PathImprint imprint, @Nonnull final AtomicLong counter,
-			@Nonnull final String lineSeparator) throws IOException {
+	protected void writeImprint(@Nonnull final Writer writer, @Nonnull final PathImprint imprint, @Nonnull final long number, @Nonnull final String lineSeparator)
+			throws IOException {
 		//TODO ensure no tab in path
-		writer.write("%s\t%s\t%s\t%s\t%s\t%s%s".formatted(Long.toUnsignedString(counter.incrementAndGet()), imprint.fingerprint().toChecksum().substring(0, 8),
-				imprint.path(), imprint.modifiedAt(), imprint.contentFingerprint().toChecksum(), imprint.fingerprint().toChecksum(), lineSeparator));
+		writer.write("%s\t%s\t%s\t%s\t%s\t%s%s".formatted(Long.toUnsignedString(number), imprint.fingerprint().toChecksum().substring(0, 8), imprint.path(),
+				imprint.modifiedAt(), imprint.contentFingerprint().toChecksum(), imprint.fingerprint().toChecksum(), lineSeparator));
+	}
+
+	/**
+	 * Implementation of a path imprint generator listener that prints status information as the generator traverses the tree and generates imprints.
+	 * <p>
+	 * If {@link DatimprintCli#isVerbose()} is enabled, directories will be printed as they are entered.
+	 * </p>
+	 * <p>
+	 * The generated imprint count (which may include imprints that are still in the process of being generated) and information about the current file hash being
+	 * generated are printed unless {@link DatimprintCli#isQuiet()} is enabled.
+	 * </p>
+	 * @implNote The printed count is based upon the traversal/generation status, and is independent of the line numbers placed in the file.
+	 * @implNote Because this class uses targeted synchronization to avoid contention, it is not guaranteed that the status will be printed in the order of calls.
+	 *           In particular it is possible, although not likely, for the "count" part of the status to be out of order for subsequent calls.
+	 * @author Garret Wilson
+	 */
+	private class StatusPrinter implements PathImprintGeneratorListener {
+
+		final AtomicLong counter = new AtomicLong(0);
+
+		/**
+		 * {@inheritDoc}
+		 * @implSpec This implementation writes the directory {@link System#err} if {@link DatimprintCli#isVerbose()} is enabled.
+		 * @implNote This implementation relies on {@link PrintStream} already being synchronized for thread safety.
+		 */
+		@Override
+		public void onEnterDirectory(final Path directory) {
+			if(isVerbose()) {
+				System.err.println(directory.toAbsolutePath());
+			}
+		}
+
+		@Override
+		public void beforeGenerateFileContentFingerprint(final Path file) {
+			//TODO
+		}
+
+		@Override
+		public void afterGenerateFileContentFingerprint(final Path file) {
+			//TODO
+		}
+
+		@Override
+		public void onGenerateImprint(final Path path) {
+			counter.incrementAndGet();
+			printStatus();
+
+		}
+
+		//TODO doc
+		protected void printStatus() {
+			if(!isQuiet()) {
+				//TODO create utility for shortening path
+				//TODO find a way to overwrite the previous path; probably pad all the filenames if needed
+				System.err.print("%d | %s\r".formatted(counter.get(), "TODO.txt"));
+			}
+		}
+
 	}
 
 }

@@ -30,7 +30,7 @@ import java.io.*;
 import java.nio.file.*;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.*;
 import java.util.stream.Stream;
@@ -80,11 +80,18 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		return produceExecutor;
 	}
 
-	private final Consumer<PathImprint> imprintConsumer;
+	private final Optional<Consumer<PathImprint>> foundImprintConsumer;
 
-	/** @return The consumer to which imprints will be produced after being generated. */
-	protected Consumer<PathImprint> getImprintConsumer() {
-		return imprintConsumer;
+	/** @return The consumer, if any, to which imprints will be produced after being generated. */
+	protected Optional<Consumer<PathImprint>> findImprintConsumer() {
+		return foundImprintConsumer;
+	}
+
+	private final Optional<PathImprintGeneratorListener> foundListener;
+
+	/** @return The listener, if any, to events from this class. */
+	protected Optional<PathImprintGeneratorListener> findListener() {
+		return foundListener;
 	}
 
 	/**
@@ -92,9 +99,11 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @implSpec Traversal and imprint generation uses a thread pool that by default has the same number of threads as the number of available processors.
 	 * @implSpec Production of imprints is performed in a separate thread with maximum priority, as we want the consumer to always have priority so that imprints
 	 *           can be discarded as quickly as possible, lowering the memory overhead.
+	 * @see Builder#newDefaultGenerateExecutor()
+	 * @see Builder#newDefaultProduceExecutor()
 	 */
 	public PathImprintGenerator() {
-		this((Consumer<PathImprint>)__ -> {}); //ignore produced imprints
+		this(Builder.newDefaultGenerateExecutor(), Builder.newDefaultProduceExecutor());
 	}
 
 	/**
@@ -103,13 +112,11 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @implSpec Production of imprints is performed in a separate thread with maximum priority, as we want the consumer to always have priority so that imprints
 	 *           can be discarded as quickly as possible, lowering the memory overhead.
 	 * @param imprintConsumer The consumer to which imprints will be produced after being generated.
+	 * @see Builder#newDefaultGenerateExecutor()
+	 * @see Builder#newDefaultProduceExecutor()
 	 */
 	public PathImprintGenerator(@Nonnull final Consumer<PathImprint> imprintConsumer) {
-		this(newFixedThreadPool(Runtime.getRuntime().availableProcessors()), newSingleThreadExecutor(runnable -> {
-			final Thread thread = Executors.defaultThreadFactory().newThread(runnable);
-			thread.setPriority(Thread.MAX_PRIORITY);
-			return thread;
-		}), imprintConsumer);
+		this(Builder.newDefaultGenerateExecutor(), Builder.newDefaultProduceExecutor(), imprintConsumer);
 	}
 
 	/**
@@ -117,7 +124,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @param executor The executor for traversing and generating imprints; and producing imprints. May or may not be an instance of {@link ExecutorService}.
 	 */
 	public PathImprintGenerator(@Nonnull final Executor executor) {
-		this(executor, executor); //ignore produced imprints
+		this(executor, executor);
 	}
 
 	/**
@@ -128,7 +135,10 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 *          executor as the generate executor.
 	 */
 	public PathImprintGenerator(@Nonnull final Executor generateExecutor, @Nonnull final Executor produceExecutor) {
-		this(generateExecutor, produceExecutor, __ -> {}); //ignore produced imprints
+		this.generateExecutor = requireNonNull(generateExecutor);
+		this.produceExecutor = requireNonNull(produceExecutor);
+		this.foundImprintConsumer = Optional.empty();
+		this.foundListener = Optional.empty();
 	}
 
 	/**
@@ -143,7 +153,8 @@ public class PathImprintGenerator implements Closeable, Clogged {
 			@Nonnull final Consumer<PathImprint> imprintConsumer) {
 		this.generateExecutor = requireNonNull(generateExecutor);
 		this.produceExecutor = requireNonNull(produceExecutor);
-		this.imprintConsumer = requireNonNull(imprintConsumer);
+		this.foundImprintConsumer = Optional.of(imprintConsumer);
+		this.foundListener = Optional.empty();
 	}
 
 	/**
@@ -153,7 +164,8 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	protected PathImprintGenerator(@Nonnull final Builder builder) {
 		this.generateExecutor = builder.determineGenerateExecutor();
 		this.produceExecutor = builder.determineProduceExecutor();
-		this.imprintConsumer = builder.imprintConsumer;
+		this.foundImprintConsumer = builder.findImprintConsumer();
+		this.foundListener = builder.findListener();
 	}
 
 	/** @return A new builder for specifying a new {@link PathImprintGenerator}. */
@@ -217,7 +229,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @param path The path for which an imprint should be produced.
 	 * @return An imprint of the path.
 	 * @throws IOException if there is a problem accessing the file system.
-	 * @see #getImprintConsumer()
+	 * @see #findImprintConsumer()
 	 * @see #getProduceExecutor()
 	 * @throws CompletionException if there was an error completing asynchronous generation and production.
 	 */
@@ -226,20 +238,23 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	}
 
 	/**
-	 * Asynchronously generates an imprint of a single path, which must be a regular file or a directory, and then produces it to the imprint consumer.
+	 * Asynchronously generates an imprint of a single path, which must be a regular file or a directory, and then produces it to the imprint consumer, if there
+	 * is one.
 	 * @implSpec This implementation delegates to {@link #generateImprintAsync(Path)}.
 	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
 	 * @param path The path for which an imprint should be produced.
 	 * @return A future imprint of the path.
 	 * @throws IOException if there is a problem accessing the file system.
-	 * @see #getImprintConsumer()
+	 * @see #findImprintConsumer()
 	 * @see #getProduceExecutor()
 	 */
 	public CompletableFuture<PathImprint> produceImprintAsync(@Nonnull final Path path) throws IOException {
-		return generateImprintAsync(path).thenApplyAsync(imprint -> {
-			getImprintConsumer().accept(imprint);
+		final CompletableFuture<PathImprint> futureGeneratedImprint = generateImprintAsync(path);
+		//only schedule producing the imprint in the future if we have an imprint consumer
+		return findImprintConsumer().map(imprintConsumer -> futureGeneratedImprint.thenApplyAsync(imprint -> {
+			imprintConsumer.accept(imprint);
 			return imprint;
-		}, getProduceExecutor());
+		}, getProduceExecutor())).orElse(futureGeneratedImprint); //otherwise the future generated imprint is all we need
 	}
 
 	/**
@@ -252,6 +267,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 */
 	public CompletableFuture<PathImprint> generateImprintAsync(@Nonnull final Path path) throws IOException {
 		getLogger().trace("Generating imprint for path `{}`.", path);
+		findListener().ifPresent(listener -> listener.onGenerateImprint(path));
 		final FileTime modifiedAt = getLastModifiedTime(path);
 		if(isRegularFile(path)) {
 			final CompletableFuture<Hash> futureContentFingerprint = generateFileContentFingerprintAsync(path);
@@ -261,7 +277,6 @@ public class PathImprintGenerator implements Closeable, Clogged {
 			final CompletableFuture<DirectoryContentChildrenFingerprints> futureContentChildrenFingerprints = generateDirectoryContentChildrenFingerprintsAsync(path);
 			return futureContentChildrenFingerprints.thenApply(throwingFunction(contentChildrenFingerprints -> PathImprint.forDirectory(path, modifiedAt,
 					contentChildrenFingerprints.contentFingerprint(), contentChildrenFingerprints.childrenFingerprint(), FINGERPRINT_ALGORITHM)));
-
 		} else {
 			throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
 		}
@@ -284,6 +299,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 */
 	CompletableFuture<Map<Path, CompletableFuture<PathImprint>>> produceChildImprintsAsync(@Nonnull final Path directory) throws IOException {
 		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
+			findListener().ifPresent(listener -> listener.onEnterDirectory(directory));
 			try (final Stream<Path> childPaths = list(directory)) {
 				return childPaths.collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
 			}
@@ -299,9 +315,13 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 */
 	CompletableFuture<Hash> generateFileContentFingerprintAsync(@Nonnull final Path file) throws IOException {
 		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
+			findListener().ifPresent(listener -> listener.beforeGenerateFileContentFingerprint(file));
+			final Hash fingerprint;
 			try (final InputStream inputStream = newInputStream(file)) {
-				return FINGERPRINT_ALGORITHM.hash(inputStream);
+				fingerprint = FINGERPRINT_ALGORITHM.hash(inputStream);
 			}
+			findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
+			return fingerprint;
 		}), getGenerateExecutor());
 	}
 
@@ -336,48 +356,6 @@ public class PathImprintGenerator implements Closeable, Clogged {
 					});
 				});
 	}
-
-	/**
-	 * Generates an imprint of a single path given the pre-generated hash of the path contents.
-	 * @implSpec This implementation delegates to {@link #generateImprint(Path, FileTime, Hash)}.
-	 * @param path The path for which an imprint should be generated.
-	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
-	 * @return An imprint of the path.
-	 * @throws IOException if there is a problem accessing the path in the file system.
-	 */
-	//	PathImprint generateImprint(@Nonnull final Path path, @Nonnull final Hash contentFingerprint) throws IOException {
-	//		return generateImprint(path, getLastModifiedTime(path), contentFingerprint);
-	//	}
-
-	/**
-	 * Generates an imprint of a single path given the modification timestamp and pre-generated hash of the path contents.
-	 * @implSpec The overall fingerprint is generated using {@link #generateFingerprint(Hash, FileTime, Hash)}.
-	 * @param path The path for which an imprint should be generated.
-	 * @param modifiedAt The modification timestamp of the file.
-	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
-	 * @return An imprint of the path.
-	 */
-	//	PathImprint generateImprint(@Nonnull final Path path, @Nonnull final FileTime modifiedAt, @Nonnull final Hash contentFingerprint) {
-	//		final Hash filenameFingerprint = FINGERPRINT_ALGORITHM
-	//				.hash(Paths.findFilename(path).orElseThrow(() -> new IllegalArgumentException("Path `%s` has no filename.".formatted(path))));
-	//		return new PathImprint(path, filenameFingerprint, modifiedAt, contentFingerprint, generateFingerprint(filenameFingerprint, modifiedAt, contentFingerprint));
-	//	}
-
-	/**
-	 * Returns an overall fingerprint for the components of an imprint.
-	 * @implSpec the file time is hashed at millisecond resolution.
-	 * @param filenameFingerprint The fingerprint of the path filename.
-	 * @param modifiedAt The modification timestamp of the file.
-	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
-	 * @return A fingerprint of all the components.
-	 */
-	//	public static Hash generateFingerprint(@Nonnull final Hash filenameFingerprint, @Nonnull final FileTime modifiedAt, @Nonnull final Hash contentFingerprint) {
-	//		final MessageDigest fingerprintMessageDigest = FINGERPRINT_ALGORITHM.getInstance();
-	//		filenameFingerprint.updateMessageDigest(fingerprintMessageDigest);
-	//		fingerprintMessageDigest.update(toBytes(modifiedAt.toMillis()));
-	//		contentFingerprint.updateMessageDigest(fingerprintMessageDigest);
-	//		return Hash.fromDigest(fingerprintMessageDigest);
-	//	}
 
 	/**
 	 * Holder of two fingerprints calculated from directory children.
@@ -519,8 +497,13 @@ public class PathImprintGenerator implements Closeable, Clogged {
 			return this;
 		}
 
-		@Nonnull
-		private Consumer<PathImprint> imprintConsumer = __ -> {};
+		@Nullable
+		private Consumer<PathImprint> imprintConsumer = null;
+
+		/** @return The configured imprint consumer, if any. */
+		private Optional<Consumer<PathImprint>> findImprintConsumer() {
+			return Optional.ofNullable(imprintConsumer);
+		}
 
 		/**
 		 * Specifies the imprint consumer.
@@ -529,6 +512,28 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		 */
 		public Builder withImprintConsumer(@Nonnull final Consumer<PathImprint> imprintConsumer) {
 			this.imprintConsumer = requireNonNull(imprintConsumer);
+			return this;
+		}
+
+		@Nullable
+		private PathImprintGeneratorListener listener = null;
+
+		/** @return The configured listener, if any. */
+		private Optional<PathImprintGeneratorListener> findListener() {
+			return Optional.ofNullable(listener);
+		}
+
+		/**
+		 * Specifies the listener of events from this class.
+		 * <p>
+		 * The listener will be called immediately in the relevant thread. Thus the listener <em>must be thread safe</em> and should take as little time as
+		 * possible.
+		 * </p>
+		 * @param listener The listener of events from the generator.
+		 * @return This builder.
+		 */
+		public Builder withListener(@Nonnull final PathImprintGeneratorListener listener) {
+			this.listener = requireNonNull(listener);
 			return this;
 		}
 
