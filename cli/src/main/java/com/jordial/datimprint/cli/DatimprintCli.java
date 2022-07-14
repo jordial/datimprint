@@ -17,7 +17,6 @@
 package com.jordial.datimprint.cli;
 
 import static com.globalmentor.collections.iterators.Iterators.*;
-import static com.globalmentor.java.Characters.*;
 import static java.nio.charset.StandardCharsets.*;
 import static java.util.Collections.*;
 import static java.util.concurrent.Executors.*;
@@ -41,7 +40,6 @@ import org.slf4j.Logger;
 import org.slf4j.event.Level;
 
 import com.globalmentor.application.*;
-import com.globalmentor.java.*;
 import com.jordial.datimprint.file.*;
 
 import picocli.CommandLine.*;
@@ -77,13 +75,13 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @param argExecutorType The particular type of executor to use, if any.
 	 * @throws IOException If an I/O error occurs.
 	 */
-	@Command(description = "Generates a data imprint of the indicated file or directory tree. The output will use the default console/system encoding and line separator unless an output file is specified.", mixinStandardHelpOptions = true)
+	@Command(description = "Generates a data imprint of the indicated file or directory tree. The output will use the default console/system encoding unless an output file is specified. The system line separator will be used.", mixinStandardHelpOptions = true)
 	public void generate(
 			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated.%nDefaults to the working directory.") @Nonnull Path argDataPath,
 			@Option(names = {"--charset",
 					"-c"}, description = "The charset for text encoding.%nDefaults to UTF-8 if an output file is specified; otherwise uses the console system encoding unless redirected, in which case uses the default system encoding.") Optional<Charset> argCharset,
 			@Option(names = {"--output",
-					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. A single LF will be used as the line separator.") Optional<Path> argOutput,
+					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. The system line separator will be used.") Optional<Path> argOutput,
 			@Option(names = {
 					"--executor"}, description = "Specifies a particular executor to use for multithreading. Valid values: ${COMPLETION-CANDIDATES}") Optional<PathImprintGenerator.Builder.ExecutorType> argExecutorType)
 			throws IOException {
@@ -93,13 +91,12 @@ public class DatimprintCli extends BaseCliApplication {
 		logAppInfo();
 
 		final long startTimeNs = System.nanoTime();
-		final String lineSeparator = argOutput.map(__ -> LINE_FEED_CHAR).map(String::valueOf).orElseGet(OperatingSystem::getLineSeparator);
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s` ...".formatted(argDataPath.toAbsolutePath())).reset());
 		final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
 		try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
-			final Datim.Serializer datimSerializer = new Datim.Serializer(lineSeparator);
+			final Datim.Serializer datimSerializer = new Datim.Serializer();
 			final Writer writer = new BufferedWriter(new OutputStreamWriter(outputStream, charset));
 			try {
 				datimSerializer.appendHeader(writer);
