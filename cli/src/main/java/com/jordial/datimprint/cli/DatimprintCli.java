@@ -99,11 +99,12 @@ public class DatimprintCli extends BaseCliApplication {
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s` ...".formatted(argDataPath.toAbsolutePath())).reset());
 		final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
 		try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
+			final Datim.Serializer datimSerializer = new Datim.Serializer(lineSeparator);
 			final Writer writer = new BufferedWriter(new OutputStreamWriter(outputStream, charset));
 			try {
-				writeImprintHeader(writer, lineSeparator);
+				datimSerializer.appendHeader(writer);
 				final AtomicLong counter = new AtomicLong(0);
-				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> writeImprint(writer, imprint, counter.incrementAndGet(), lineSeparator));
+				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> datimSerializer.appendImprint(writer, imprint, counter.incrementAndGet()));
 				try (final StatusPrinter statusPrinter = new StatusPrinter(startTimeNs)) {
 					final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer);
 					if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
@@ -132,32 +133,6 @@ public class DatimprintCli extends BaseCliApplication {
 
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
 				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(elapsed.toHours(), elapsed.toMinutesPart(), elapsed.toSecondsPart())).reset());
-	}
-
-	/**
-	 * Prints the header of an imprint output.
-	 * @param writer The writer for writing the imprint header.
-	 * @param lineSeparator The end-of-line character.
-	 * @throws IOException if an I/O error occurs writing the data.
-	 */
-	protected void writeImprintHeader(@Nonnull final Writer writer, @Nonnull final String lineSeparator) throws IOException {
-		writer.write("#\tMiniprint\tPath\tModified At\tContent Fingerprint\tComplete Fingerprint%s".formatted(lineSeparator));
-		//TODO add "Levels" column with e.g. `+++` designation for number of levels below root
-	}
-
-	/**
-	 * Prints the header of an imprint output. The counter will be incremented before printing.
-	 * @param writer The writer for writing the imprint.
-	 * @param imprint The imprint to print.
-	 * @param number The number of the line being written.
-	 * @param lineSeparator The end-of-line character.
-	 * @throws IOException if an I/O error occurs writing the data.
-	 */
-	protected void writeImprint(@Nonnull final Writer writer, @Nonnull final PathImprint imprint, @Nonnull final long number, @Nonnull final String lineSeparator)
-			throws IOException {
-		//TODO ensure no tab in path
-		writer.write("%s\t%s\t%s\t%s\t%s\t%s%s".formatted(Long.toUnsignedString(number), imprint.fingerprint().toChecksum().substring(0, 8), imprint.path(),
-				imprint.modifiedAt(), imprint.contentFingerprint().toChecksum(), imprint.fingerprint().toChecksum(), lineSeparator));
 	}
 
 	/**

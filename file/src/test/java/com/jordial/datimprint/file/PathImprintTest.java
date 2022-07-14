@@ -31,7 +31,7 @@ import org.junit.jupiter.api.*;
 import com.globalmentor.security.Hash;
 
 /**
- * Tests of {@link PathImprint}..
+ * Tests of {@link PathImprint}.
  * @author Garret Wilson
  */
 public class PathImprintTest {
@@ -40,6 +40,7 @@ public class PathImprintTest {
 	@Test
 	void testForFile() throws IOException {
 		final Path mockFilePath = mock(Path.class);
+		when(mockFilePath.toAbsolutePath()).thenReturn(mockFilePath);
 		final Path mockFileNamePath = mock(Path.class);
 		final String filename = "foo.bar";
 		when(mockFileNamePath.toString()).thenReturn(filename);
@@ -52,12 +53,14 @@ public class PathImprintTest {
 		assertThat(imprint.modifiedAt(), is(modifiedAt));
 		assertThat(imprint.contentFingerprint(), is(contentFingerprint));
 		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(mockFilePath, modifiedAt, contentFingerprint, null, FINGERPRINT_ALGORITHM)));
+		assertThat(imprint.miniprintChecksum(), is(imprint.fingerprint().toChecksum().substring(0, PathImprint.MINIPRINT_CHECKSUM_LENGTH)));
 	}
 
 	/** @see PathImprint#forFile(Path, FileTime, Hash, com.globalmentor.security.MessageDigests.Algorithm) */
 	@Test
 	void testForDirectory() throws IOException {
 		final Path mockDirectoryPath = mock(Path.class);
+		when(mockDirectoryPath.toAbsolutePath()).thenReturn(mockDirectoryPath);
 		final Path mockDirectoryFileNamePath = mock(Path.class);
 		final String directoryfilename = "foobar";
 		when(mockDirectoryFileNamePath.toString()).thenReturn(directoryfilename);
@@ -66,6 +69,7 @@ public class PathImprintTest {
 
 		//foo child file
 		final Path mockFooFilePath = mock(Path.class);
+		when(mockFooFilePath.toAbsolutePath()).thenReturn(mockFooFilePath);
 		final Path mockFooFileFileNamePath = mock(Path.class);
 		final String fooFilename = "foo.txt";
 		when(mockFooFileFileNamePath.toString()).thenReturn(fooFilename);
@@ -76,6 +80,7 @@ public class PathImprintTest {
 
 		//bar child file
 		final Path mockBarFilePath = mock(Path.class);
+		when(mockBarFilePath.toAbsolutePath()).thenReturn(mockBarFilePath);
 		final Path mockBarFileFileNamePath = mock(Path.class);
 		final String barFilename = "bar.txt";
 		when(mockBarFileFileNamePath.toString()).thenReturn(barFilename);
@@ -101,6 +106,7 @@ public class PathImprintTest {
 		assertThat(imprint.contentFingerprint(), is(directoryContentFingerprint));
 		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(mockDirectoryPath, directoryModifiedAt, directoryContentFingerprint,
 				directoryChildrenFingerprint, FINGERPRINT_ALGORITHM)));
+		assertThat(imprint.miniprintChecksum(), is(imprint.fingerprint().toChecksum().substring(0, PathImprint.MINIPRINT_CHECKSUM_LENGTH)));
 	}
 
 }

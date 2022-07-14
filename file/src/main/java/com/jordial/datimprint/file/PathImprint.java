@@ -48,7 +48,7 @@ import com.globalmentor.security.*;
  * level below the current path; this value will only be present for directories. Finally the fingerprint of the path itself includes the content and children
  * fingerprints.
  * </p>
- * @param path The path being described
+ * @param path The path being described; guaranteed to be absolute.
  * @param modifiedAt The modification timestamp of the file.
  * @param contentFingerprint The fingerprint of the contents of a file, or for a directory, of all the content fingerprints of the children.
  * @param fingerprint The full fingerprint of the file or directory, including its name, attribute, content, and children fingerprint.
@@ -56,18 +56,30 @@ import com.globalmentor.security.*;
  */
 public record PathImprint(@Nonnull Path path, @Nonnull FileTime modifiedAt, @Nonnull Hash contentFingerprint, @Nonnull Hash fingerprint) {
 
+	/** The length used for the miniprint checksum. */
+	public static final int MINIPRINT_CHECKSUM_LENGTH = 8;
+
 	/**
-	 * Constructor for argument validation.
-	 * @param path The path being described
+	 * Constructor for argument validation and normalization.
+	 * @param path The path being described; normalized to the absolute path.
 	 * @param modifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
 	 * @param fingerprint The full fingerprint of the file or directory, including its path, modification timestamp, and content fingerprint.
 	 */
 	public PathImprint {
-		requireNonNull(path);
+		path = path.toAbsolutePath();
 		requireNonNull(modifiedAt);
 		requireNonNull(contentFingerprint);
 		requireNonNull(fingerprint);
+	}
+
+	/**
+	 * @return A smaller version of the fingerprint.
+	 * @see #fingerprint()
+	 * @see #MINIPRINT_CHECKSUM_LENGTH
+	 */
+	public String miniprintChecksum() {
+		return fingerprint().toChecksum().substring(0, MINIPRINT_CHECKSUM_LENGTH);
 	}
 
 	/**
