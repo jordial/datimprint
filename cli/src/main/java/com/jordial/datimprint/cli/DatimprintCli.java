@@ -20,6 +20,7 @@ import static com.globalmentor.collections.iterators.Iterators.*;
 import static java.nio.charset.StandardCharsets.*;
 import static java.util.Collections.*;
 import static java.util.concurrent.Executors.*;
+import static java.util.stream.Collectors.*;
 import static org.fusesource.jansi.Ansi.*;
 import static org.zalando.fauxpas.FauxPas.*;
 
@@ -28,8 +29,7 @@ import java.nio.charset.*;
 import java.nio.file.*;
 import java.time.Duration;
 import java.util.function.Consumer;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -69,7 +69,7 @@ public class DatimprintCli extends BaseCliApplication {
 
 	/**
 	 * Generates a data imprint of the indicated file or directory tree.
-	 * @param argDataPath The file or base directory of the data for which an imprint should be generated.
+	 * @param argDataPaths The files or base directories of the data for which an imprint should be generated.
 	 * @param argCharset The charset for text encoding.
 	 * @param argOutput The path to a file in which to store the output.
 	 * @param argExecutorType The particular type of executor to use, if any.
@@ -77,7 +77,7 @@ public class DatimprintCli extends BaseCliApplication {
 	 */
 	@Command(description = "Generates a data imprint of the indicated file or directory tree. The output will use the default console/system encoding unless an output file is specified. The system line separator will be used.", mixinStandardHelpOptions = true)
 	public void generate(
-			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated.%nDefaults to the working directory.") @Nonnull Path argDataPath,
+			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated. Multiple data sources are allowed.", arity = "1..*") @Nonnull List<Path> argDataPaths,
 			@Option(names = {"--charset",
 					"-c"}, description = "The charset for text encoding.%nDefaults to UTF-8 if an output file is specified; otherwise uses the console system encoding unless redirected, in which case uses the default system encoding.") Optional<Charset> argCharset,
 			@Option(names = {"--output",
@@ -93,7 +93,9 @@ public class DatimprintCli extends BaseCliApplication {
 		final long startTimeNs = System.nanoTime();
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s` ...".formatted(argDataPath.toAbsolutePath())).reset());
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a(
+				"Generating imprint for %s ...".formatted(argDataPaths.stream().map(Path::toAbsolutePath).map(path -> "`%s`".formatted(path)).collect(joining(", "))))
+				.reset());
 		final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
 		try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
 			final Datim.Serializer datimSerializer = new Datim.Serializer();
@@ -109,7 +111,12 @@ public class DatimprintCli extends BaseCliApplication {
 					}
 					argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
 					try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
-						imprintGenerator.produceImprint(argDataPath);
+						for(final Path dataPath : argDataPaths) {
+							datimSerializer.appendBasePath(writer, dataPath);
+							imprintGenerator.produceImprint(dataPath);
+							//At this point the entire tree has been traversed. There may still be imprints being produced (i.e written),
+							//but starting generating and producing imprints for another tree will cause no problem—those imprints will just be added to the queue.
+						}
 					}
 				}
 			} finally {

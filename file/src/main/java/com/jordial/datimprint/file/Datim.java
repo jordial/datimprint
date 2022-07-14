@@ -25,6 +25,7 @@ import static java.util.Objects.*;
 
 import java.io.*;
 import java.nio.charset.Charset;
+import java.nio.file.Path;
 import java.util.List;
 
 import javax.annotation.*;
@@ -68,6 +69,9 @@ public class Datim {
 	public static List<String> FIELD_NAMES = List.of(FIELD_NAME_NUMBER, FIELD_NAME_MINIPRINT, FIELD_NAME_PATH, FIELD_NAME_CONTENT_MODIFIED_AT,
 			FIELD_NAME_CONTENT_FINGERPRINT, FIELD_NAME_FINGERPRINT);
 
+	/** The identification of a line containing a base path designation. */
+	public static final String LINE_TYPE_BASE_PATH = "/";
+
 	/**
 	 * Implementation for serializing Datim files.
 	 * @author Garret Wilson
@@ -107,21 +111,26 @@ public class Datim {
 		 * @see #getLineSeparator()
 		 */
 		public <A extends Appendable> A appendHeader(@Nonnull final A appendable) throws IOException {
-			return appendHeader(appendable, getLineSeparator());
+			appendJoined(appendable, FIELD_DELIMITER, FIELD_NAMES).append(getLineSeparator());
+			//TODO add "levels" column with e.g. `+++` designation for number of levels below root
+			return appendable;
 		}
 
 		/**
-		 * Writes the header of an imprints file.
+		 * Writes a base path line using the configured line separator.
 		 * @param <A> The type of appendable.
-		 * @param appendable The appendable for writing the imprint header.
-		 * @param lineSeparator The end-of-line character sequence.
-		 * @return The same appendable after appending the header.
+		 * @param appendable The appendable for writing the imprint.
+		 * @param basePath The base path to write; will be converted to absolute.
+		 * @return The same appendable after appending the base path line.
+		 * @throws IllegalArgumentException if the base path contains {@link #FIELD_DELIMITER}.
 		 * @throws IOException if an I/O error occurs writing the data.
-		 * @see #FIELD_NAMES
+		 * @see #getLineSeparator()
 		 */
-		static <A extends Appendable> A appendHeader(@Nonnull final A appendable, @Nonnull final CharSequence lineSeparator) throws IOException {
-			appendJoined(appendable, FIELD_DELIMITER, FIELD_NAMES).append(lineSeparator);
-			//TODO add "levels" column with e.g. `+++` designation for number of levels below root
+		public <A extends Appendable> A appendBasePath(@Nonnull final A appendable, @Nonnull final Path basePath) throws IOException {
+			final String basePathString = basePath.toAbsolutePath().toString();
+			checkArgument(!contains(basePathString, FIELD_DELIMITER), "Base path `%s` cannot contain field delimiter %s.", basePathString,
+					Characters.getLabel(FIELD_DELIMITER));
+			appendJoined(appendable, FIELD_DELIMITER, LINE_TYPE_BASE_PATH, "", basePathString, "", "", "").append(getLineSeparator());
 			return appendable;
 		}
 
@@ -138,26 +147,10 @@ public class Datim {
 		 */
 		public <A extends Appendable> A appendImprint(@Nonnull final A appendable, @Nonnull final PathImprint imprint, @Nonnull final long number)
 				throws IOException {
-			return appendImprint(appendable, imprint, number, getLineSeparator());
-		}
-
-		/**
-		 * Writes a single imprint record.
-		 * @param <A> The type of appendable.
-		 * @param appendable The appendable for writing the imprint.
-		 * @param imprint The imprint to write.
-		 * @param number The number of the line being written.
-		 * @param lineSeparator The end-of-line character.
-		 * @return The same appendable after appending the imprint.
-		 * @throws IllegalArgumentException if the imprint path contains {@link #FIELD_DELIMITER}.
-		 * @throws IOException if an I/O error occurs writing the data.
-		 */
-		static <A extends Appendable> A appendImprint(@Nonnull final A appendable, @Nonnull final PathImprint imprint, @Nonnull final long number,
-				@Nonnull final CharSequence lineSeparator) throws IOException {
-			final String pathString = imprint.path().toString();
-			checkArgument(!contains(pathString, FIELD_DELIMITER), "Path `%s` cannot contain field delimiter .", pathString, Characters.getLabel(FIELD_DELIMITER));
+			final String pathString = imprint.path().toString(); //the imprint path is already absolute
+			checkArgument(!contains(pathString, FIELD_DELIMITER), "Path `%s` cannot contain field delimiter %s.", pathString, Characters.getLabel(FIELD_DELIMITER));
 			appendJoined(appendable, FIELD_DELIMITER, Long.toUnsignedString(number), imprint.miniprintChecksum(), pathString, imprint.modifiedAt().toString(),
-					imprint.contentFingerprint().toChecksum(), imprint.fingerprint().toChecksum()).append(lineSeparator);
+					imprint.contentFingerprint().toChecksum(), imprint.fingerprint().toChecksum()).append(getLineSeparator());
 			return appendable;
 		}
 
