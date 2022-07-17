@@ -268,14 +268,14 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	public CompletableFuture<PathImprint> generateImprintAsync(@Nonnull final Path path) throws IOException {
 		getLogger().trace("Generating imprint for path `{}`.", path);
 		findListener().ifPresent(listener -> listener.onGenerateImprint(path));
-		final FileTime modifiedAt = getLastModifiedTime(path);
+		final FileTime contentModifiedAt = getLastModifiedTime(path);
 		if(isRegularFile(path)) {
 			final CompletableFuture<Hash> futureContentFingerprint = generateFileContentFingerprintAsync(path);
 			return futureContentFingerprint
-					.thenApply(throwingFunction(contentFingerprint -> PathImprint.forFile(path, modifiedAt, contentFingerprint, FINGERPRINT_ALGORITHM)));
+					.thenApply(throwingFunction(contentFingerprint -> PathImprint.forFile(path, contentModifiedAt, contentFingerprint, FINGERPRINT_ALGORITHM)));
 		} else if(isDirectory(path)) {
 			final CompletableFuture<DirectoryContentChildrenFingerprints> futureContentChildrenFingerprints = generateDirectoryContentChildrenFingerprintsAsync(path);
-			return futureContentChildrenFingerprints.thenApply(throwingFunction(contentChildrenFingerprints -> PathImprint.forDirectory(path, modifiedAt,
+			return futureContentChildrenFingerprints.thenApply(throwingFunction(contentChildrenFingerprints -> PathImprint.forDirectory(path, contentModifiedAt,
 					contentChildrenFingerprints.contentFingerprint(), contentChildrenFingerprints.childrenFingerprint(), FINGERPRINT_ALGORITHM)));
 		} else {
 			throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));

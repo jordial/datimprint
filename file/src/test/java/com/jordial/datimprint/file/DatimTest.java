@@ -16,25 +16,136 @@
 
 package com.jordial.datimprint.file;
 
+import static com.github.npathai.hamcrestopt.OptionalMatchers.*;
 import static com.jordial.datimprint.file.PathImprintGenerator.FINGERPRINT_ALGORITHM;
 import static org.hamcrest.MatcherAssert.*;
 import static org.hamcrest.Matchers.*;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 import java.io.IOException;
+import java.io.StringReader;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
+import java.util.Map;
 
 import org.junit.jupiter.api.*;
 
 import com.globalmentor.security.Hash;
+import com.jordial.datimprint.file.Datim.Field;
 
 /**
  * Tests of {@link Datim}.
  * @author Garret Wilson
  */
 public class DatimTest {
+
+	//Field
+
+	/** @see Datim.Field#findByHeaderName(String) */
+	@Test
+	void testFieldFindByHeadeerName() {
+		assertThat(Field.findByHeaderName("#"), isPresentAndIs(Field.NUMBER));
+		assertThat(Field.findByHeaderName("path"), isPresentAndIs(Field.PATH));
+		assertThat(Field.findByHeaderName("fingerprint"), isPresentAndIs(Field.FINGERPRINT));
+		assertThat(Field.findByHeaderName("foo"), isEmpty());
+	}
+
+	//Parser
+
+	/** @see Datim.Parser#readHeader() */
+	@Test
+	void testReadHeader() throws IOException {
+		assertThat("Canonical header with newline.",
+				new Datim.Parser(new StringReader("#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint\n")).readHeader(),
+				contains(Field.NUMBER, Field.MINIPRINT, Field.PATH, Field.CONTENT_MODIFIED_AT, Field.CONTENT_FINGERPRINT, Field.FINGERPRINT));
+		assertThat("Canonical header.", new Datim.Parser(new StringReader("#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint")).readHeader(),
+				contains(Field.NUMBER, Field.MINIPRINT, Field.PATH, Field.CONTENT_MODIFIED_AT, Field.CONTENT_FINGERPRINT, Field.FINGERPRINT));
+		assertThat("Headers in different order.",
+				new Datim.Parser(new StringReader("fingerprint\tminiprint\t#\tpath\tcontent-modifiedAt\tcontent-fingerprint")).readHeader(),
+				contains(Field.FINGERPRINT, Field.MINIPRINT, Field.NUMBER, Field.PATH, Field.CONTENT_MODIFIED_AT, Field.CONTENT_FINGERPRINT));
+		assertThat("Only some headers.", new Datim.Parser(new StringReader("miniprint\tpath\tcontent-fingerprint\tcontent-modifiedAt")).readHeader(),
+				contains(Field.MINIPRINT, Field.PATH, Field.CONTENT_FINGERPRINT, Field.CONTENT_MODIFIED_AT));
+		assertThrows(IOException.class, () -> new Datim.Parser(new StringReader("miniprint\tpath\tfoo-bar\tcontent-modifiedAt")).readHeader(), "Unknown header.");
+		assertThrows(IOException.class, () -> new Datim.Parser(new StringReader("miniprint\tpath\t\tcontent-modifiedAt")).readHeader(), "Missing header.");
+		assertThrows(IOException.class, () -> new Datim.Parser(new StringReader("miniprint\tpath\tfoo-bar\tcontent-modifiedAt\t")).readHeader(),
+				"Trailing delimiter.");
+	}
+
+	/** @see Datim.Parser#getFieldIndexes() */
+	@Test
+	void testGetFieldIndexes() throws IOException {
+		assertThat("Canonical header with newline.",
+				new Datim.Parser(new StringReader("#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint\n")).getFieldIndexes(),
+				is(Map.of(Field.NUMBER, 0, Field.MINIPRINT, 1, Field.PATH, 2, Field.CONTENT_MODIFIED_AT, 3, Field.CONTENT_FINGERPRINT, 4, Field.FINGERPRINT, 5)));
+		assertThat("Canonical header.",
+				new Datim.Parser(new StringReader("#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint")).getFieldIndexes(),
+				is(Map.of(Field.NUMBER, 0, Field.MINIPRINT, 1, Field.PATH, 2, Field.CONTENT_MODIFIED_AT, 3, Field.CONTENT_FINGERPRINT, 4, Field.FINGERPRINT, 5)));
+		assertThat("Headers in different order.",
+				new Datim.Parser(new StringReader("fingerprint\tminiprint\t#\tpath\tcontent-modifiedAt\tcontent-fingerprint")).getFieldIndexes(),
+				is(Map.of(Field.FINGERPRINT, 0, Field.MINIPRINT, 1, Field.NUMBER, 2, Field.PATH, 3, Field.CONTENT_MODIFIED_AT, 4, Field.CONTENT_FINGERPRINT, 5)));
+		assertThrows(IOException.class, () -> new Datim.Parser(new StringReader("miniprint\tpath\tcontent-fingerprint\tcontent-modifiedAt")).getFieldIndexes(),
+				"Not all required headers present.");
+	}
+
+	/** @see Datim.Parser#getFieldIndexes() */
+	@Test
+	void testGetFieldIndexesCalledSubsequentlyReturnsSameReference() throws IOException {
+		final Datim.Parser parser = new Datim.Parser(new StringReader("#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint"));
+		final Map<Field, Integer> fieldIndexes = parser.getFieldIndexes();
+		assertThat(parser.getFieldIndexes(), is((sameInstance(fieldIndexes))));
+	}
+
+	/** @see Datim.Parser#readImprint() */
+	@Test
+	void testReadImprint() throws IOException {
+		final var input = """
+				#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint
+				81985529216486895\tc56f2ad0\t/foo.bar\t2022-05-22T20:48:16.7512146Z\tc3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2\tc56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9
+				""";
+		assertThat(new Datim.Parser(new StringReader(input)).readImprint(),
+				isPresentAndIs(new PathImprint(Path.of("/foo.bar"), FileTime.from(Instant.ofEpochSecond(1653252496, 751214600)),
+						Hash.fromChecksum("c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2"),
+						Hash.fromChecksum("c56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9"))));
+	}
+
+	/** @see Datim.Parser#readImprint() */
+	@Test
+	void verifyReadImprintReturnsEmptyIfNoImprintPresent() throws IOException {
+		final var input = """
+				#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint
+				""";
+		assertThat(new Datim.Parser(new StringReader(input)).readImprint(), isEmpty());
+	}
+
+	/** @see Datim.Parser#readImprint() */
+	@Test
+	void verifyReadImprintReturnsEmptyIfBasePathButNoImprintPresent() throws IOException {
+		final var input = """
+				#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint
+				/\t\t/foo\t\t\t
+				""";
+		assertThat(new Datim.Parser(new StringReader(input)).readImprint(), isEmpty());
+	}
+
+	/** @see Datim.Parser#readImprint() */
+	@Test
+	void verifyReadImprintSkipsBasePathRecords() throws IOException {
+		final var input = """
+				#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint
+				/\t\t/foo\t\t\t
+				/\t\t/bar\t\t\t
+				81985529216486895\tc56f2ad0\t/foo.bar\t2022-05-22T20:48:16.7512146Z\tc3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2\tc56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9
+				""";
+		final var parser = new Datim.Parser(new StringReader(input));
+		assertThat(parser.findCurrentBasePath(), isEmpty());
+		assertThat(parser.readImprint(),
+				isPresentAndIs(new PathImprint(Path.of("/foo.bar"), FileTime.from(Instant.ofEpochSecond(1653252496, 751214600)),
+						Hash.fromChecksum("c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2"),
+						Hash.fromChecksum("c56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9"))));
+		assertThat(parser.findCurrentBasePath(), isPresentAndIs(Path.of("/bar")));
+	}
 
 	//Serializer
 

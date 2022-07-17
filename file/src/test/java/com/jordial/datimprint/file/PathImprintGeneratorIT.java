@@ -152,14 +152,14 @@ public class PathImprintGeneratorIT {
 		final String filename = "foo.bar";
 		final String content = "fooBar";
 		final Path file = writeString(tempDir.resolve(filename), content);
-		final FileTime modifiedAt = getLastModifiedTime(file);
+		final FileTime contentModifiedAt = getLastModifiedTime(file);
 		final Hash contentFingerprint = FINGERPRINT_ALGORITHM.hash(content);
 
 		final PathImprint imprint = testImprintGenerator.generateImprintAsync(file).join();
 		assertThat(imprint.path(), is(file));
-		assertThat(imprint.modifiedAt(), is(modifiedAt));
+		assertThat(imprint.contentModifiedAt(), is(contentModifiedAt));
 		assertThat(imprint.contentFingerprint(), is(contentFingerprint));
-		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(file, modifiedAt, contentFingerprint, null, FINGERPRINT_ALGORITHM)));
+		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(file, contentModifiedAt, contentFingerprint, null, FINGERPRINT_ALGORITHM)));
 		assertThat(testProducedImprints, is(empty()));
 	}
 
@@ -169,14 +169,14 @@ public class PathImprintGeneratorIT {
 		final String filename = "foo.bar";
 		final String content = "fooBar";
 		final Path file = writeString(tempDir.resolve(filename), content);
-		final FileTime modifiedAt = getLastModifiedTime(file);
+		final FileTime contentModifiedAt = getLastModifiedTime(file);
 		final Hash contentFingerprint = FINGERPRINT_ALGORITHM.hash(content);
 
 		final PathImprint imprint = testImprintGenerator.produceImprintAsync(file).join();
 		assertThat(imprint.path(), is(file));
-		assertThat(imprint.modifiedAt(), is(modifiedAt));
+		assertThat(imprint.contentModifiedAt(), is(contentModifiedAt));
 		assertThat(imprint.contentFingerprint(), is(contentFingerprint));
-		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(file, modifiedAt, contentFingerprint, null, FINGERPRINT_ALGORITHM)));
+		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(file, contentModifiedAt, contentFingerprint, null, FINGERPRINT_ALGORITHM)));
 		assertThat(testProducedImprints, containsInAnyOrder(imprint));
 	}
 
@@ -204,16 +204,16 @@ public class PathImprintGeneratorIT {
 		//foo child file
 		final String fooFileContents = "foo";
 		final Path fooFile = writeString(directory.resolve("foo.txt"), fooFileContents);
-		final FileTime fooModifiedAt = getLastModifiedTime(fooFile);
+		final FileTime fooContentModifiedAt = getLastModifiedTime(fooFile);
 		final Hash fooContentFingerprint = FINGERPRINT_ALGORITHM.hash(fooFileContents);
-		final PathImprint fooImprint = PathImprint.forFile(fooFile, fooModifiedAt, fooContentFingerprint, FINGERPRINT_ALGORITHM);
+		final PathImprint fooImprint = PathImprint.forFile(fooFile, fooContentModifiedAt, fooContentFingerprint, FINGERPRINT_ALGORITHM);
 
 		//bar child file
 		final String barFileContents = "bar";
 		final Path barFile = writeString(directory.resolve("bar.txt"), barFileContents);
-		final FileTime barModifiedAt = getLastModifiedTime(barFile);
+		final FileTime barContentModifiedAt = getLastModifiedTime(barFile);
 		final Hash barContentFingerprint = FINGERPRINT_ALGORITHM.hash(barFileContents);
-		final PathImprint barImprint = PathImprint.forFile(barFile, barModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
+		final PathImprint barImprint = PathImprint.forFile(barFile, barContentModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
 
 		//important: normalize the order of the children, which the method should do as well
 		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.hash(barContentFingerprint, fooContentFingerprint);
@@ -232,16 +232,16 @@ public class PathImprintGeneratorIT {
 		//foo child file
 		final String fooFileContents = "foo";
 		final Path fooFile = writeString(directory.resolve("foo.txt"), fooFileContents);
-		final FileTime fooModifiedAt = getLastModifiedTime(fooFile);
+		final FileTime fooContentModifiedAt = getLastModifiedTime(fooFile);
 		final Hash fooContentFingerprint = FINGERPRINT_ALGORITHM.hash(fooFileContents);
-		final PathImprint fooImprint = PathImprint.forFile(fooFile, fooModifiedAt, fooContentFingerprint, FINGERPRINT_ALGORITHM);
+		final PathImprint fooImprint = PathImprint.forFile(fooFile, fooContentModifiedAt, fooContentFingerprint, FINGERPRINT_ALGORITHM);
 
 		//bar child file
 		final String barFileContents = "bar";
 		final Path barFile = writeString(directory.resolve("bar.txt"), barFileContents);
-		final FileTime barModifiedAt = getLastModifiedTime(barFile);
+		final FileTime barContentModifiedAt = getLastModifiedTime(barFile);
 		final Hash barContentFingerprint = FINGERPRINT_ALGORITHM.hash(barFileContents);
-		final PathImprint barImprint = PathImprint.forFile(barFile, barModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
+		final PathImprint barImprint = PathImprint.forFile(barFile, barContentModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
 
 		final Map<Path, PathImprint> childImprintsByPath = testImprintGenerator.produceChildImprintsAsync(directory).join().entrySet().stream()
 				.collect(toMap(Map.Entry::getKey, entry -> entry.getValue().join()));
@@ -259,18 +259,18 @@ public class PathImprintGeneratorIT {
 		//foo child file
 		final String fooFileContents = "foo";
 		final Path fooFile = writeString(directory.resolve("foo.txt"), fooFileContents);
-		final FileTime fooModifiedAt = getLastModifiedTime(fooFile);
+		final FileTime fooContentModifiedAt = getLastModifiedTime(fooFile);
 		final Hash fooContentFingerprint = FINGERPRINT_ALGORITHM.hash(fooFileContents);
-		final PathImprint fooImprint = PathImprint.forFile(fooFile, fooModifiedAt, fooContentFingerprint, FINGERPRINT_ALGORITHM);
+		final PathImprint fooImprint = PathImprint.forFile(fooFile, fooContentModifiedAt, fooContentFingerprint, FINGERPRINT_ALGORITHM);
 
 		//bar child file
 		final String barFileContents = "bar";
 		final Path barFile = writeString(directory.resolve("bar.txt"), barFileContents);
-		final FileTime barModifiedAt = getLastModifiedTime(barFile);
+		final FileTime barContentModifiedAt = getLastModifiedTime(barFile);
 		final Hash barContentFingerprint = FINGERPRINT_ALGORITHM.hash(barFileContents);
-		final PathImprint barImprint = PathImprint.forFile(barFile, barModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
+		final PathImprint barImprint = PathImprint.forFile(barFile, barContentModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
 
-		final FileTime directoryModifiedAt = getLastModifiedTime(directory); //get directory modification timestamp after its children are added/modified
+		final FileTime directoryContentModifiedAt = getLastModifiedTime(directory); //get directory modification timestamp after its children are added/modified
 
 		//important: normalize the order of the children, which the method should do as well
 		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.hash(barContentFingerprint, fooContentFingerprint);
@@ -278,10 +278,10 @@ public class PathImprintGeneratorIT {
 
 		final PathImprint imprint = testImprintGenerator.generateImprintAsync(directory).join();
 		assertThat(imprint.path(), is(directory));
-		assertThat(imprint.modifiedAt(), is(directoryModifiedAt));
+		assertThat(imprint.contentModifiedAt(), is(directoryContentModifiedAt));
 		assertThat(imprint.contentFingerprint(), is(directoryContentFingerprint));
-		assertThat(imprint.fingerprint(),
-				is(PathImprint.generateFingerprint(directory, directoryModifiedAt, directoryContentFingerprint, directoryChildrenFingerprint, FINGERPRINT_ALGORITHM)));
+		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(directory, directoryContentModifiedAt, directoryContentFingerprint,
+				directoryChildrenFingerprint, FINGERPRINT_ALGORITHM)));
 		assertThat(testProducedImprints, containsInAnyOrder(fooImprint, barImprint));
 	}
 
@@ -293,18 +293,18 @@ public class PathImprintGeneratorIT {
 		//foo child file
 		final String fooFileContents = "foo";
 		final Path fooFile = writeString(directory.resolve("foo.txt"), fooFileContents);
-		final FileTime fooModifiedAt = getLastModifiedTime(fooFile);
+		final FileTime fooContentModifiedAt = getLastModifiedTime(fooFile);
 		final Hash fooContentFingerprint = FINGERPRINT_ALGORITHM.hash(fooFileContents);
-		final PathImprint fooImprint = PathImprint.forFile(fooFile, fooModifiedAt, fooContentFingerprint, FINGERPRINT_ALGORITHM);
+		final PathImprint fooImprint = PathImprint.forFile(fooFile, fooContentModifiedAt, fooContentFingerprint, FINGERPRINT_ALGORITHM);
 
 		//bar child file
 		final String barFileContents = "bar";
 		final Path barFile = writeString(directory.resolve("bar.txt"), barFileContents);
-		final FileTime barModifiedAt = getLastModifiedTime(barFile);
+		final FileTime barContentModifiedAt = getLastModifiedTime(barFile);
 		final Hash barContentFingerprint = FINGERPRINT_ALGORITHM.hash(barFileContents);
-		final PathImprint barImprint = PathImprint.forFile(barFile, barModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
+		final PathImprint barImprint = PathImprint.forFile(barFile, barContentModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
 
-		final FileTime directoryModifiedAt = getLastModifiedTime(directory); //get directory modification timestamp after its children are added/modified
+		final FileTime directoryContentModifiedAt = getLastModifiedTime(directory); //get directory modification timestamp after its children are added/modified
 
 		//important: normalize the order of the children, which the method should do as well
 		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.hash(barContentFingerprint, fooContentFingerprint);
@@ -312,10 +312,10 @@ public class PathImprintGeneratorIT {
 
 		final PathImprint imprint = testImprintGenerator.produceImprintAsync(directory).join();
 		assertThat(imprint.path(), is(directory));
-		assertThat(imprint.modifiedAt(), is(directoryModifiedAt));
+		assertThat(imprint.contentModifiedAt(), is(directoryContentModifiedAt));
 		assertThat(imprint.contentFingerprint(), is(directoryContentFingerprint));
-		assertThat(imprint.fingerprint(),
-				is(PathImprint.generateFingerprint(directory, directoryModifiedAt, directoryContentFingerprint, directoryChildrenFingerprint, FINGERPRINT_ALGORITHM)));
+		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(directory, directoryContentModifiedAt, directoryContentFingerprint,
+				directoryChildrenFingerprint, FINGERPRINT_ALGORITHM)));
 		assertThat(testProducedImprints, containsInAnyOrder(imprint, fooImprint, barImprint));
 	}
 

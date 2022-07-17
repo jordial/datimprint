@@ -49,12 +49,12 @@ import com.globalmentor.security.*;
  * fingerprints.
  * </p>
  * @param path The path being described; guaranteed to be absolute.
- * @param modifiedAt The modification timestamp of the file.
+ * @param contentModifiedAt The modification timestamp of the file.
  * @param contentFingerprint The fingerprint of the contents of a file, or for a directory, of all the content fingerprints of the children.
  * @param fingerprint The full fingerprint of the file or directory, including its name, attribute, content, and children fingerprint.
  * @author Garret Wilson
  */
-public record PathImprint(@Nonnull Path path, @Nonnull FileTime modifiedAt, @Nonnull Hash contentFingerprint, @Nonnull Hash fingerprint) {
+public record PathImprint(@Nonnull Path path, @Nonnull FileTime contentModifiedAt, @Nonnull Hash contentFingerprint, @Nonnull Hash fingerprint) {
 
 	/** The length used for the miniprint checksum. */
 	public static final int MINIPRINT_CHECKSUM_LENGTH = 8;
@@ -62,13 +62,13 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime modifiedAt, @Non
 	/**
 	 * Constructor for argument validation and normalization.
 	 * @param path The path being described; normalized to the absolute path.
-	 * @param modifiedAt The modification timestamp of the file.
+	 * @param contentModifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
 	 * @param fingerprint The full fingerprint of the file or directory, including its path, modification timestamp, and content fingerprint.
 	 */
 	public PathImprint {
 		path = path.toAbsolutePath();
-		requireNonNull(modifiedAt);
+		requireNonNull(contentModifiedAt);
 		requireNonNull(contentFingerprint);
 		requireNonNull(fingerprint);
 	}
@@ -87,16 +87,17 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime modifiedAt, @Non
 	 * @implSpec The overall fingerprint is generated using
 	 *           {@link #generateFingerprint(Path, FileTime, Hash, Hash, com.globalmentor.security.MessageDigests.Algorithm)}.
 	 * @param file The path of the file for which an imprint should be generated.
-	 * @param modifiedAt The modification timestamp of the file.
+	 * @param contentModifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the contents of the file.
 	 * @param fingerprintAlgorithm The algorithm for calculating fingerprints.
 	 * @return An imprint for the file.
 	 * @throws IllegalArgumentException if the path has no filename.
 	 * @see Path#getFileName()
 	 */
-	public static PathImprint forFile(@Nonnull final Path file, @Nonnull final FileTime modifiedAt, @Nonnull final Hash contentFingerprint,
+	public static PathImprint forFile(@Nonnull final Path file, @Nonnull final FileTime contentModifiedAt, @Nonnull final Hash contentFingerprint,
 			@Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) {
-		return new PathImprint(file, modifiedAt, contentFingerprint, generateFingerprint(file, modifiedAt, contentFingerprint, null, fingerprintAlgorithm));
+		return new PathImprint(file, contentModifiedAt, contentFingerprint,
+				generateFingerprint(file, contentModifiedAt, contentFingerprint, null, fingerprintAlgorithm));
 	}
 
 	/**
@@ -104,7 +105,7 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime modifiedAt, @Non
 	 * @implSpec The overall fingerprint is generated using
 	 *           {@link #generateFingerprint(Path, FileTime, Hash, Hash, com.globalmentor.security.MessageDigests.Algorithm)}.
 	 * @param directory The path of the directory for which an imprint should be generated.
-	 * @param modifiedAt The modification timestamp of the file.
+	 * @param contentModifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the child content fingerprints of the directory.
 	 * @param childrenFingerprint The fingerprint of the the child fingerprints of the directory. Note that an empty directory is still expected to have a
 	 *          children fingerprint.
@@ -113,17 +114,17 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime modifiedAt, @Non
 	 * @throws IllegalArgumentException if the path has no filename.
 	 * @see Path#getFileName()
 	 */
-	public static PathImprint forDirectory(@Nonnull final Path directory, @Nonnull final FileTime modifiedAt, @Nonnull final Hash contentFingerprint,
+	public static PathImprint forDirectory(@Nonnull final Path directory, @Nonnull final FileTime contentModifiedAt, @Nonnull final Hash contentFingerprint,
 			@Nonnull final Hash childrenFingerprint, @Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) {
-		return new PathImprint(directory, modifiedAt, contentFingerprint,
-				generateFingerprint(directory, modifiedAt, contentFingerprint, childrenFingerprint, fingerprintAlgorithm));
+		return new PathImprint(directory, contentModifiedAt, contentFingerprint,
+				generateFingerprint(directory, contentModifiedAt, contentFingerprint, childrenFingerprint, fingerprintAlgorithm));
 	}
 
 	/**
 	 * Returns an overall fingerprint for the components of an imprint.
 	 * @implSpec the file time is hashed at millisecond resolution.
 	 * @param path The path for which an imprint should be generated.
-	 * @param modifiedAt The modification timestamp of the file.
+	 * @param contentModifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the contents of a file, or of the all the child content fingerprints of a directory.
 	 * @param childrenFingerprint The fingerprint of the the child fingerprints of a directory, or <code>null</code> if children are not applicable (e.g. for a
 	 *          file). Note that am empty directory is still expected to have a children fingerprint.
@@ -132,13 +133,13 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime modifiedAt, @Non
 	 * @throws IllegalArgumentException if the path has no filename.
 	 * @see Path#getFileName()
 	 */
-	public static Hash generateFingerprint(@Nonnull final Path path, @Nonnull final FileTime modifiedAt, @Nonnull final Hash contentFingerprint,
+	public static Hash generateFingerprint(@Nonnull final Path path, @Nonnull final FileTime contentModifiedAt, @Nonnull final Hash contentFingerprint,
 			@Nullable final Hash childrenFingerprint, @Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) {
 		final Hash filenameFingerprint = fingerprintAlgorithm
 				.hash(Paths.findFilename(path).orElseThrow(() -> new IllegalArgumentException("Path `%s` has no filename.".formatted(path))));
 		final MessageDigest fingerprintMessageDigest = fingerprintAlgorithm.newMessageDigest();
 		filenameFingerprint.updateMessageDigest(fingerprintMessageDigest);
-		fingerprintMessageDigest.update(toBytes(modifiedAt.toMillis()));
+		fingerprintMessageDigest.update(toBytes(contentModifiedAt.toMillis()));
 		contentFingerprint.updateMessageDigest(fingerprintMessageDigest);
 		if(childrenFingerprint != null) {
 			childrenFingerprint.updateMessageDigest(fingerprintMessageDigest);
