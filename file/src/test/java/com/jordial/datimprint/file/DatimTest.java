@@ -17,6 +17,7 @@
 package com.jordial.datimprint.file;
 
 import static com.github.npathai.hamcrestopt.OptionalMatchers.*;
+import static com.globalmentor.collections.iterables.Iterables.*;
 import static com.jordial.datimprint.file.PathImprintGenerator.FINGERPRINT_ALGORITHM;
 import static org.hamcrest.MatcherAssert.*;
 import static org.hamcrest.Matchers.*;
@@ -25,7 +26,7 @@ import static org.mockito.Mockito.*;
 
 import java.io.IOException;
 import java.io.StringReader;
-import java.nio.file.Path;
+import java.nio.file.*;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.Map;
@@ -122,29 +123,53 @@ public class DatimTest {
 	/** @see Datim.Parser#readImprint() */
 	@Test
 	void verifyReadImprintReturnsEmptyIfBasePathButNoImprintPresent() throws IOException {
+		final Path rootDirectory = findFirst(FileSystems.getDefault().getRootDirectories()).orElseThrow(IllegalStateException::new);
+		final Path fooBaseDirectory = rootDirectory.resolve("test").resolve("foo");
 		final var input = """
 				#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint
-				/\t\t/foo\t\t\t
-				""";
+				/\t\t%s\t\t\t
+				""".formatted(fooBaseDirectory);
 		assertThat(new Datim.Parser(new StringReader(input)).readImprint(), isEmpty());
 	}
 
 	/** @see Datim.Parser#readImprint() */
 	@Test
 	void verifyReadImprintSkipsBasePathRecords() throws IOException {
+		final Path rootDirectory = findFirst(FileSystems.getDefault().getRootDirectories()).orElseThrow(IllegalStateException::new);
+		final Path fooBaseDirectory = rootDirectory.resolve("test").resolve("foo");
+		final Path barBaseDirectory = rootDirectory.resolve("test").resolve("bar");
+		final Path testFile = barBaseDirectory.resolve("test.bin");
 		final var input = """
 				#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint
-				/\t\t/foo\t\t\t
-				/\t\t/bar\t\t\t
-				81985529216486895\tc56f2ad0\t/foo.bar\t2022-05-22T20:48:16.7512146Z\tc3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2\tc56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9
-				""";
+				/\t\t%s\t\t\t
+				/\t\t%s\t\t\t
+				81985529216486895\tc56f2ad0\t%s\t2022-05-22T20:48:16.7512146Z\tc3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2\tc56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9
+				"""
+				.formatted(fooBaseDirectory, barBaseDirectory, testFile);
 		final var parser = new Datim.Parser(new StringReader(input));
 		assertThat(parser.findCurrentBasePath(), isEmpty());
 		assertThat(parser.readImprint(),
-				isPresentAndIs(new PathImprint(Path.of("/foo.bar"), FileTime.from(Instant.ofEpochSecond(1653252496, 751214600)),
+				isPresentAndIs(new PathImprint(testFile, FileTime.from(Instant.ofEpochSecond(1653252496, 751214600)),
 						Hash.fromChecksum("c3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2"),
 						Hash.fromChecksum("c56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9"))));
-		assertThat(parser.findCurrentBasePath(), isPresentAndIs(Path.of("/bar")));
+		assertThat(parser.findCurrentBasePath(), isPresentAndIs(barBaseDirectory));
+	}
+
+	/** @see Datim.Parser#readImprint() */
+	@Test
+	void testReadImprintRelocatedPath() throws IOException {
+		final Path rootDirectory = findFirst(FileSystems.getDefault().getRootDirectories()).orElseThrow(IllegalStateException::new);
+		final Path sourceDirectory = rootDirectory.resolve("test").resolve("source");
+		final Path destinationDirectory = rootDirectory.resolve("test").resolve("destination");
+		final Path testFile = sourceDirectory.resolve("test.bin");
+		final var input = """
+				#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint
+				/\t\t%s\t\t\t
+				81985529216486895\tc56f2ad0\t%s\t2022-05-22T20:48:16.7512146Z\tc3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2\tc56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9
+				"""
+				.formatted(sourceDirectory, testFile);
+		final var parser = new Datim.Parser(new StringReader(input), destinationDirectory);
+		assertThat(parser.readImprint().map(PathImprint::path), isPresentAndIs(destinationDirectory.resolve("test.bin")));
 	}
 
 	//Serializer
