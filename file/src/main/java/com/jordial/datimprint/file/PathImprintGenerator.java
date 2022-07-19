@@ -309,11 +309,13 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	}
 
 	/**
-	 * Generates the fingerprint of a file's contents asynchronously.
+	 * Generates the fingerprint of a file's contents asynchronously. Events are sent before and after fingerprint generation.
 	 * @implSpec This implementation uses the executor returned by {@link #getGenerateExecutor()}.
 	 * @param file The file for which a fingerprint should be generated of the contents.
 	 * @return A future fingerprint of the file contents.
 	 * @throws IOException if there is a problem reading the content.
+	 * @see Listener#beforeGenerateFileContentFingerprint(Path)
+	 * @see Listener#afterGenerateFileContentFingerprint(Path)
 	 */
 	CompletableFuture<Hash> generateFileContentFingerprintAsync(@Nonnull final Path file) throws IOException {
 		return CompletableFuture.supplyAsync(throwingSupplier(() -> {

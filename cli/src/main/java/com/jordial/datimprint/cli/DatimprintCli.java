@@ -146,7 +146,11 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @implNote The printed count is based upon the traversal/generation status, and is independent of the line numbers placed in the file.
 	 * @author Garret Wilson
 	 */
-	private class GenerateStatusPrinter extends CliStatusPrinter<Path> implements PathImprintGenerator.Listener {
+	private class GenerateStatusPrinter extends CliStatus<Path> implements PathImprintGenerator.Listener {
+
+		public GenerateStatusPrinter() {
+			super(System.err);
+		}
 
 		@Override
 		public void onGenerateImprint(final Path path) {
@@ -229,7 +233,11 @@ public class DatimprintCli extends BaseCliApplication {
 	 * </p>
 	 * @author Garret Wilson
 	 */
-	private class CheckStatusPrinter extends CliStatusPrinter<Path> implements PathChecker.Listener {
+	private class CheckStatusPrinter extends CliStatus<Path> implements PathChecker.Listener {
+
+		public CheckStatusPrinter() {
+			super(System.err);
+		}
 
 		@Override
 		public void onCheckPath(final Path path, final PathImprint imprint) {
@@ -247,6 +255,28 @@ public class DatimprintCli extends BaseCliApplication {
 		@Override
 		public void afterGenerateFileContentFingerprint(final Path file) {
 			removeWork(file);
+		}
+
+		@Override
+		public void onResult(final PathChecker.Result result) {
+			if(!result.isMatch()) {
+				printLine(toReport(result));
+			}
+		}
+
+		/**
+		 * Determines a string for reporting a result.
+		 * @param result The result being reported.
+		 * @return The report message to provide the user.
+		 */
+		protected String toReport(@Nonnull final PathChecker.Result result) {
+			//TODO improve with warnings vs errors
+			//TODO add report for matching results in case needed in the future
+			if(result instanceof PathChecker.MissingPathResult) {
+				return "No path `%s` matching imprint `%s`.".formatted(result.getPath(), result.getImprint().path());
+			} else {
+				return "Path `%s` does not match imprint `%s`.".formatted(result.getPath(), result.getImprint().path());
+			}
 		}
 
 	}

@@ -123,98 +123,206 @@ public class PathChecker implements Closeable, Clogged {
 	 */
 	public CompletableFuture<Result> checkPathAsync(@Nonnull final Path path, @Nonnull final PathImprint imprint) throws IOException {
 		getLogger().trace("Checking path `{}` against imprint {}.", path, imprint);
-		//TODO handle file not exist
 		findListener().ifPresent(listener -> listener.onCheckPath(path, imprint));
-		final CompletableFuture<FileTime> futureContentModifiedAt = CompletableFuture.supplyAsync(throwingSupplier(() -> getLastModifiedTime(path)));
-		if(isRegularFile(path)) {
-			final CompletableFuture<Hash> futureContentFingerprint = generateFileContentFingerprintAsync(path);
-			return futureContentModifiedAt.thenCombine(futureContentFingerprint,
-					(contentModifiedAt, contentFingerprint) -> new Result(path, contentModifiedAt, contentFingerprint, imprint));
-		} else if(isDirectory(path)) { //nothing expensive to do for a directory; check it immediately
-			return futureContentModifiedAt.thenApply(contentModifiedAt -> new Result(path, contentModifiedAt, null, imprint));
-		} else {
-			throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
-		}
-	}
-
-	/**
-	 * Generates the fingerprint of a file's contents asynchronously.
-	 * @implSpec This implementation uses the executor returned by {@link #getExecutor())}.
-	 * @param file The file for which a fingerprint should be generated of the contents.
-	 * @return A future fingerprint of the file contents.
-	 * @throws IOException if there is a problem reading the content.
-	 */
-	CompletableFuture<Hash> generateFileContentFingerprintAsync(@Nonnull final Path file) throws IOException {
 		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
-			findListener().ifPresent(listener -> listener.beforeGenerateFileContentFingerprint(file));
-			final Hash fingerprint = FINGERPRINT_ALGORITHM.hash(file);
-			findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
-			return fingerprint;
+			final Result result;
+			if(isRegularFile(path)) {
+				result = new FileResult(path, imprint);
+			} else if(isDirectory(path)) {
+				result = new DirectoryResult(path, imprint);
+			} else if(!exists(path)) {
+				result = new MissingPathResult(path, imprint);
+			} else {
+				throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
+			}
+			findListener().ifPresent(listener -> listener.onResult(result));
+			return result;
 		}), getExecutor());
 	}
 
-	//TODO document
-	public class Result {
+	/**
+	 * Generates the fingerprint of a file's contents. Events are sent before and after fingerprint generation.
+	 * @param file The file for which a fingerprint should be generated of the contents.
+	 * @return The fingerprint of the file contents.
+	 * @throws IOException if there is a problem reading the content.
+	 * @see Listener#beforeGenerateFileContentFingerprint(Path)
+	 * @see Listener#afterGenerateFileContentFingerprint(Path)
+	 */
+	Hash generateFileContentFingerprint(@Nonnull final Path file) throws IOException {
+		findListener().ifPresent(listener -> listener.beforeGenerateFileContentFingerprint(file));
+		final Hash fingerprint = FINGERPRINT_ALGORITHM.hash(file);
+		findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
+		return fingerprint;
+	}
+
+	/**
+	 * The result of checking a path against an imprint.
+	 * @author Garret Wilson
+	 */
+	public sealed interface Result {
+
+		/** @return The path being checked. */
+		public Path getPath();
+
+		/** @return The imprint against which the path is being checked. */
+		public PathImprint getImprint();
+
+		/** @return <code>true</code> if the path matched the imprint. */
+		boolean isMatch();
+
+	}
+
+	/**
+	 * Abstract implementation of a result.
+	 * @author Garret Wilson
+	 */
+	protected sealed abstract class AbstractResult implements Result {
 
 		private final Path path;
 
-		private final FileTime contentModifiedAt;
-
-		@Nullable
-		private final Hash contentHash;
+		@Override
+		public Path getPath() {
+			return path;
+		}
 
 		private final PathImprint imprint;
 
-		private final boolean isFilenameMatch;
-
-		private final boolean isContentModifiedAtMatch;
-
-		private final boolean isContentFingerprintMatch;
-
-		private final boolean isMatch;
-
-		//TODO add getters
+		@Override
+		public PathImprint getImprint() {
+			return imprint;
+		}
 
 		/**
 		 * Constructor.
 		 * @param path The path being checked.
-		 * @param contentModifiedAt The path's modification timestamp.
-		 * @param contentFingerprint The hash of the contents (e.g. for files), or <code>null</code> if there is no content fingerprint available (e.g. for
-		 *          directories).
 		 * @param imprint The imprint against which the path is being checked.
 		 */
-		private Result(@Nonnull final Path path, @Nonnull final FileTime contentModifiedAt, @Nullable final Hash contentFingerprint,
-				@Nonnull final PathImprint imprint) {
+		protected AbstractResult(@Nonnull final Path path, @Nonnull final PathImprint imprint) {
 			this.path = requireNonNull(path);
-			this.contentModifiedAt = requireNonNull(contentModifiedAt);
-			this.contentHash = contentFingerprint;
 			this.imprint = requireNonNull(imprint);
-			this.isFilenameMatch = findFilename(path).equals(findFilename(imprint.path()));
-			//TODO check ignoreDirectoryModification flag
-			this.isContentModifiedAtMatch = contentModifiedAt.equals(imprint.contentModifiedAt());
-			this.isContentFingerprintMatch = contentFingerprint != null ? contentFingerprint.equals(imprint.fingerprint()) : true;
-			this.isMatch = isFilenameMatch && isContentModifiedAtMatch && isContentFingerprintMatch;
 		}
 
 	}
 
 	/**
-	 * Holder of two fingerprints calculated from directory children.
-	 * @param contentFingerprint The fingerprint of the child content fingerprints of the directory.
-	 * @param childrenFingerprint The fingerprint of the the child fingerprints of the directory. Note that am empty directory is still expected to have a
-	 *          children fingerprint.
+	 * A result of checking a path that does not exist.
 	 * @author Garret Wilson
 	 */
-	record DirectoryContentChildrenFingerprints(@Nonnull Hash contentFingerprint, @Nonnull Hash childrenFingerprint) {
+	public final class MissingPathResult extends AbstractResult {
 
 		/**
-		 * Constructor for argument validation.
-		 * @param contentFingerprint The fingerprint of the child content fingerprints of the directory.
-		 * @param childrenFingerprint The fingerprint of the the child fingerprints of the directory.
+		 * Constructor.
+		 * @param path The path being checked.
+		 * @param imprint The imprint against which the path is being checked.
 		 */
-		public DirectoryContentChildrenFingerprints {
-			requireNonNull(contentFingerprint);
-			requireNonNull(childrenFingerprint);
+		protected MissingPathResult(@Nonnull final Path path, @Nonnull final PathImprint imprint) {
+			super(path, imprint);
+		}
+
+		@Override
+		public boolean isMatch() {
+			return false;
+		}
+
+	}
+
+	/**
+	 * Base implementation for file and directory results.
+	 * @author Garret Wilson
+	 */
+	protected abstract sealed class BaseResult extends AbstractResult {
+
+		private final boolean isFilenameMatch;
+
+		/** @return Whether the filename of the imprint match exactly, with regard to case. */
+		public boolean isFilenameMatch() {
+			return isFilenameMatch;
+		}
+
+		private final FileTime contentModifiedAt;
+
+		private final boolean isContentModifiedAtMatch;
+
+		/** @return Whether the content modification timestamps match. */
+		public boolean isContentModifiedAtMatch() {
+			return isContentModifiedAtMatch;
+		}
+
+		/**
+		 * Constructor.
+		 * @param path The path being checked.
+		 * @param imprint The imprint against which the path is being checked.
+		 * @throws IOException if there is an error getting additional information about the path.
+		 */
+		protected BaseResult(@Nonnull final Path path, @Nonnull final PathImprint imprint) throws IOException {
+			super(path, imprint);
+			//TODO retrieve the actual filename name from the file; the one that was passed was generated
+			this.isFilenameMatch = findFilename(path).equals(findFilename(imprint.path()));
+			this.contentModifiedAt = getLastModifiedTime(path);
+			this.isContentModifiedAtMatch = contentModifiedAt.equals(imprint.contentModifiedAt());
+		}
+
+	}
+
+	/**
+	 * The result of a file check.
+	 * @author Garret Wilson
+	 */
+	public final class FileResult extends BaseResult {
+
+		private final Hash contentFingerprint;
+
+		/** @return The calculated fingerprint of the file. */
+		public Hash getContentFingerprint() {
+			return contentFingerprint;
+		}
+
+		private final boolean isContentFingerprintMatch;
+
+		/** @return Whether the imprint content fingerprint matched that of the file. */
+		public boolean isContentFingerprintMatch() {
+			return isContentFingerprintMatch;
+		}
+
+		/**
+		 * Constructor.
+		 * @param file The file being checked.
+		 * @param imprint The imprint against which the path is being checked.
+		 * @throws IOException if there is an error getting additional information about the file.
+		 */
+		protected FileResult(@Nonnull final Path file, @Nonnull final PathImprint imprint) throws IOException {
+			super(file, imprint);
+			this.contentFingerprint = generateFileContentFingerprint(file);
+			this.isContentFingerprintMatch = contentFingerprint.equals(imprint.contentFingerprint());
+		}
+
+		@Override
+		public boolean isMatch() {
+			return isFilenameMatch() && isContentModifiedAtMatch() && isContentFingerprintMatch();
+		}
+
+	}
+
+	/**
+	 * The result of a directory check.
+	 * @author Garret Wilson
+	 */
+	public final class DirectoryResult extends BaseResult {
+
+		/**
+		 * Constructor.
+		 * @param directory The directory being checked.
+		 * @param imprint The imprint against which the path is being checked.
+		 * @throws IOException if there is an error getting additional information about the directory.
+		 */
+		protected DirectoryResult(@Nonnull final Path directory, @Nonnull final PathImprint imprint) throws IOException {
+			super(directory, imprint);
+		}
+
+		@Override
+		public boolean isMatch() {
+			//TODO check ignoreDirectoryModification flag
+			return isFilenameMatch() && isContentModifiedAtMatch();
 		}
 
 	}
@@ -246,6 +354,12 @@ public class PathChecker implements Closeable, Clogged {
 		 * @param file The file the fingerprint of which has been generated.
 		 */
 		void afterGenerateFileContentFingerprint(@Nonnull Path file);
+
+		/**
+		 * Called when a path has been checked and the result is ready.
+		 * @param result The result of checking the path against an imprint.
+		 */
+		void onResult(@Nonnull Result result);
 
 	}
 
