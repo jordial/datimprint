@@ -155,23 +155,6 @@ public class DatimTest {
 		assertThat(parser.findCurrentBasePath(), isPresentAndIs(barBaseDirectory));
 	}
 
-	/** @see Datim.Parser#readImprint() */
-	@Test
-	void testReadImprintRelocatedPath() throws IOException {
-		final Path rootDirectory = findFirst(FileSystems.getDefault().getRootDirectories()).orElseThrow(IllegalStateException::new);
-		final Path sourceDirectory = rootDirectory.resolve("test").resolve("source");
-		final Path destinationDirectory = rootDirectory.resolve("test").resolve("destination");
-		final Path testFile = sourceDirectory.resolve("test.bin");
-		final var input = """
-				#\tminiprint\tpath\tcontent-modifiedAt\tcontent-fingerprint\tfingerprint
-				/\t\t%s\t\t\t
-				81985529216486895\tc56f2ad0\t%s\t2022-05-22T20:48:16.7512146Z\tc3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2\tc56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9
-				"""
-				.formatted(sourceDirectory, testFile);
-		final var parser = new Datim.Parser(new StringReader(input), destinationDirectory);
-		assertThat(parser.readImprint().map(PathImprint::path), isPresentAndIs(destinationDirectory.resolve("test.bin")));
-	}
-
 	//Serializer
 
 	/** @see Datim.Serializer#appendHeader(Appendable) */

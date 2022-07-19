@@ -16,7 +16,6 @@
 
 package com.jordial.datimprint.file;
 
-import static com.globalmentor.io.Paths.*;
 import static com.globalmentor.java.Appendables.*;
 import static com.globalmentor.java.CharSequences.*;
 import static com.globalmentor.java.Characters.*;
@@ -116,11 +115,6 @@ public class Datim {
 	 * This class keeps state about which features have been read, such as the header and base path; these features are read automatically and for the most part
 	 * implicitly from the caller's point of view.
 	 * </p>
-	 * <p>
-	 * This parser has the facility to <dfn>relocate</dfn> imprint paths to a new base path. If a destination base path is provided, each imprint path when read
-	 * will first be relativized against its last base path, and then resolved against the destination base path. In this way imprints originally created for e.g.
-	 * base path <code>/backup/data</code> can be read as if they were for e.g. base path <code>/data</code>.
-	 * </p>
 	 * @implNote This class is not thread safe.
 	 * @author Garret Wilson
 	 */
@@ -170,31 +164,13 @@ public class Datim {
 			return foundCurrentBasePath;
 		}
 
-		private final Optional<Path> destinationBasePath;
-
-		/** @return The destination base path for relocating read imprints, or empty if paths should not be relocated. */
-		public Optional<Path> findDestinationBasePath() {
-			return destinationBasePath;
-		}
-
 		/**
 		 * Input stream constructor. The charset is attempted to be determined from the Byte Order Mark (BOM), if any; defaulting to {@link Datim#DEFAULT_CHARSET}.
 		 * @param inputStream The input stream from which to parse.
 		 * @throws IOException if there is an error attempting to read the byte order mark from the input stream.
 		 */
 		public Parser(@Nonnull final InputStream inputStream) throws IOException {
-			this(inputStream, null);
-		}
-
-		/**
-		 * Input stream and destination base path constructor. The charset is attempted to be determined from the Byte Order Mark (BOM), if any; defaulting to
-		 * {@link Datim#DEFAULT_CHARSET}.
-		 * @param inputStream The input stream from which to parse.
-		 * @param destinationBasePath The destination base path for relocating read imprints, or <code>null</code> if paths should not be relocated.
-		 * @throws IOException if there is an error attempting to read the byte order mark from the input stream.
-		 */
-		public Parser(@Nonnull final InputStream inputStream, @Nullable final Path destinationBasePath) throws IOException {
-			this(new BOMInputStreamReader(inputStream, DEFAULT_CHARSET), destinationBasePath);
+			this(new BOMInputStreamReader(inputStream, DEFAULT_CHARSET));
 		}
 
 		/**
@@ -203,18 +179,7 @@ public class Datim {
 		 * @param reader The reader from which to parse.
 		 */
 		public Parser(@Nonnull final Reader reader) {
-			this(reader, null);
-		}
-
-		/**
-		 * Reader and destination base path parser.
-		 * @implNote A {@link BufferedReader} will be wrapped around the given reader unless the reader is already a {@link BufferedReader}.
-		 * @param reader The reader from which to parse.
-		 * @param destinationBasePath The destination base path for relocating read imprints, or <code>null</code> if paths should not be relocated.
-		 */
-		public Parser(@Nonnull final Reader reader, @Nullable final Path destinationBasePath) {
 			this.reader = reader instanceof BufferedReader ? (BufferedReader)reader : new BufferedReader(reader);
-			this.destinationBasePath = Optional.ofNullable(destinationBasePath);
 		}
 
 		/**
@@ -280,14 +245,10 @@ public class Datim {
 						foundCurrentBasePath = Optional.of(path); //update the base path
 						return Optional.empty(); //skip the record
 					}
-					final Path relocatedPath = findDestinationBasePath() //if there is a destination path
-							.map(throwingFunction(destBasePath -> changeBase(path, //relocate the path from the base path to the destination path
-									findCurrentBasePath().orElseThrow(() -> new IOException("Cannot relocate path `%s`; base path not known.".formatted(path))), destBasePath)))
-							.orElse(path); //otherwise use the path as-is.
 					final FileTime contentModifiedAt = FileTime.from(Instant.parse(fields[fieldIndexes.get(Field.CONTENT_MODIFIED_AT)]));
 					final Hash contentFingerprint = Hash.fromChecksum(fields[fieldIndexes.get(Field.CONTENT_FINGERPRINT)]);
 					final Hash fingerprint = Hash.fromChecksum(fields[fieldIndexes.get(Field.FINGERPRINT)]);
-					return Optional.of(new PathImprint(relocatedPath, contentModifiedAt, contentFingerprint, fingerprint));
+					return Optional.of(new PathImprint(path, contentModifiedAt, contentFingerprint, fingerprint));
 				}));
 				if(foundImprint.isPresent()) { //if this record was mapped to an imprint, short circuit --- we found what we were looking for
 					return foundImprint;

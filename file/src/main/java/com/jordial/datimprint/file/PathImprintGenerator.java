@@ -87,10 +87,10 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		return foundImprintConsumer;
 	}
 
-	private final Optional<PathImprintGeneratorListener> foundListener;
+	private final Optional<Listener> foundListener;
 
 	/** @return The listener, if any, to events from this class. */
-	protected Optional<PathImprintGeneratorListener> findListener() {
+	protected Optional<Listener> findListener() {
 		return foundListener;
 	}
 
@@ -267,8 +267,10 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 */
 	public CompletableFuture<PathImprint> generateImprintAsync(@Nonnull final Path path) throws IOException {
 		getLogger().trace("Generating imprint for path `{}`.", path);
+		//TODO handle file not exist
 		findListener().ifPresent(listener -> listener.onGenerateImprint(path));
 		final FileTime contentModifiedAt = getLastModifiedTime(path);
+		//TODO  final CompletableFuture<FileTime> futureContentModifiedAt = CompletableFuture.supplyAsync(throwingSupplier(()->getLastModifiedTime(path)));
 		if(isRegularFile(path)) {
 			final CompletableFuture<Hash> futureContentFingerprint = generateFileContentFingerprintAsync(path);
 			return futureContentFingerprint
@@ -316,10 +318,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	CompletableFuture<Hash> generateFileContentFingerprintAsync(@Nonnull final Path file) throws IOException {
 		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.beforeGenerateFileContentFingerprint(file));
-			final Hash fingerprint;
-			try (final InputStream inputStream = newInputStream(file)) {
-				fingerprint = FINGERPRINT_ALGORITHM.hash(inputStream);
-			}
+			final Hash fingerprint = FINGERPRINT_ALGORITHM.hash(file);
 			findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
 			return fingerprint;
 		}), getGenerateExecutor());
@@ -375,6 +374,41 @@ public class PathImprintGenerator implements Closeable, Clogged {
 			requireNonNull(contentFingerprint);
 			requireNonNull(childrenFingerprint);
 		}
+
+	}
+
+	/**
+	 * Listens for events from the generator.
+	 * <p>
+	 * Implementations of this class <strong>must be thread safe</strong>, as the methods may be called concurrently.
+	 * </p>
+	 * @author Garret Wilson
+	 */
+	public interface Listener { //TODO move to PathImprintGenerator
+
+		/**
+		 * Called when generation of an imprint is being scheduled for a path.
+		 * @param path The path for which the imprint is being generated.
+		 */
+		void onGenerateImprint(@Nonnull Path path);
+
+		/**
+		 * Called when traversal enters a directory, before any directory listing or generation takes place in the directory.
+		 * @param directory The directory entered.
+		 */
+		void onEnterDirectory(@Nonnull Path directory);
+
+		/**
+		 * Called immediately before fingerprint generation begins for the contents of a particular file.
+		 * @param file The file the fingerprint of which is to be generated.
+		 */
+		void beforeGenerateFileContentFingerprint(@Nonnull Path file);
+
+		/**
+		 * Called immediately after fingerprint generation is completed for the contents of a particular file.
+		 * @param file The file the fingerprint of which has been generated.
+		 */
+		void afterGenerateFileContentFingerprint(@Nonnull Path file);
 
 	}
 
@@ -516,10 +550,10 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		}
 
 		@Nullable
-		private PathImprintGeneratorListener listener = null;
+		private Listener listener = null;
 
 		/** @return The configured listener, if any. */
-		private Optional<PathImprintGeneratorListener> findListener() {
+		private Optional<Listener> findListener() {
 			return Optional.ofNullable(listener);
 		}
 
@@ -532,7 +566,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		 * @param listener The listener of events from the generator.
 		 * @return This builder.
 		 */
-		public Builder withListener(@Nonnull final PathImprintGeneratorListener listener) {
+		public Builder withListener(@Nonnull final Listener listener) {
 			this.listener = requireNonNull(listener);
 			return this;
 		}
