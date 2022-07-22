@@ -200,7 +200,7 @@ public class DatimprintCli extends BaseCliApplication {
 		final Duration timeElapsed;
 		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile));
 				final CheckStatusPrinter statusPrinter = new CheckStatusPrinter()) {
-			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder();
+			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder().withResultConsumer(statusPrinter);
 			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 				pathCheckerBuilder.withListener(statusPrinter);
 			}
@@ -233,7 +233,7 @@ public class DatimprintCli extends BaseCliApplication {
 	 * </p>
 	 * @author Garret Wilson
 	 */
-	private class CheckStatusPrinter extends CliStatus<Path> implements PathChecker.Listener {
+	private class CheckStatusPrinter extends CliStatus<Path> implements PathChecker.Listener, Consumer<PathChecker.Result> {
 
 		public CheckStatusPrinter() {
 			super(System.err);
@@ -248,17 +248,17 @@ public class DatimprintCli extends BaseCliApplication {
 		}
 
 		@Override
-		public void beforeGenerateFileContentFingerprint(final Path file) {
+		public void beforeCheckPath(final Path file) {
 			addWork(file);
 		}
 
 		@Override
-		public void afterGenerateFileContentFingerprint(final Path file) {
+		public void afterCheckPath(final Path file) {
 			removeWork(file);
 		}
 
 		@Override
-		public void onResult(final PathChecker.Result result) {
+		public void accept(final PathChecker.Result result) {
 			if(!result.isMatch()) {
 				printLine(toReport(result));
 			}

@@ -29,26 +29,47 @@ import java.nio.file.*;
 import java.nio.file.attribute.FileTime;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Consumer;
 
 import javax.annotation.*;
-
 import com.globalmentor.security.*;
 
 import io.clogr.Clogged;
 
 /**
- * Checks individual paths against their imprints to detect changes in content, filename case, and modification timestamp.
+ * Checks individual paths against their imprints to detect changes in content, filename case, and modification timestamp. The {@link #close()} method must be
+ * called after the checker is finished being used to ensure that path checking and and production of results is complete and resources are cleaned up.
  * @implSpec By default symbolic links are followed.
  * @author Garret Wilson
  * @see PathImprintGenerator#FINGERPRINT_ALGORITHM
  */
 public class PathChecker implements Closeable, Clogged {
 
-	private final Executor executor;
+	private final Executor checkExecutor;
 
-	/** @return The executor checking imprints; may or may not be an instance of {@link ExecutorService}. */
-	protected Executor getExecutor() {
-		return executor;
+	/**
+	 * @return The executor for checking paths ; may or may not be an instance of {@link ExecutorService}, and may or may not be the same executor as
+	 *         {@link #getProduceExecutor()}.
+	 */
+	protected Executor getCheckExecutor() {
+		return checkExecutor;
+	}
+
+	private final Executor produceExecutor;
+
+	/**
+	 * @return The executor for producing results; may or may not be an instance of {@link ExecutorService}, and may or may not be the same executor as
+	 *         {@link #getCheckExecutor()}.
+	 */
+	protected Executor getProduceExecutor() {
+		return produceExecutor;
+	}
+
+	private final Optional<Consumer<Result>> foundResultConsumer;
+
+	/** @return The consumer, if any, to which results will be produced after a path is checked. */
+	protected Optional<Consumer<Result>> findResultConsumer() {
+		return foundResultConsumer;
 	}
 
 	private final Optional<Listener> foundListener;
@@ -60,11 +81,14 @@ public class PathChecker implements Closeable, Clogged {
 
 	/**
 	 * No-args constructor.
-	 * @implSpec Checking uses a thread pool that by default has the same number of threads as the number of available processors.
-	 * @see Builder#newDefaultExecutor()
+	 * @see Builder#newDefaultCheckExecutor()
+	 * @see Builder#newDefaultProduceExecutor()
 	 */
 	public PathChecker() {
-		this(Builder.newDefaultExecutor());
+		this.checkExecutor = Builder.newDefaultCheckExecutor();
+		this.produceExecutor = Builder.newDefaultProduceExecutor();
+		this.foundResultConsumer = Optional.empty();
+		this.foundListener = Optional.empty();
 	}
 
 	/**
@@ -72,7 +96,8 @@ public class PathChecker implements Closeable, Clogged {
 	 * @param executor The executor for checking imprints; may or may not be an instance of {@link ExecutorService}.
 	 */
 	public PathChecker(@Nonnull final Executor executor) {
-		this.executor = requireNonNull(executor);
+		this.checkExecutor = this.produceExecutor = requireNonNull(executor);
+		this.foundResultConsumer = Optional.empty();
 		this.foundListener = Optional.empty();
 	}
 
@@ -81,7 +106,9 @@ public class PathChecker implements Closeable, Clogged {
 	 * @param builder The builder providing the specification for creating a new instance.
 	 */
 	protected PathChecker(@Nonnull final Builder builder) {
-		this.executor = builder.determineExecutor();
+		this.checkExecutor = builder.determineCheckExecutor();
+		this.produceExecutor = builder.determineProduceExecutor();
+		this.foundResultConsumer = builder.findResultConsumer();
 		this.foundListener = builder.findListener();
 	}
 
@@ -94,23 +121,47 @@ public class PathChecker implements Closeable, Clogged {
 	 * {@inheritDoc}
 	 * @implSpec This implementation shuts down the executor if it is an instance of {@link ExecutorService}.
 	 * @throws IOException If the executor service could not be shut down.
-	 * @see #getExecutor()
+	 * @see #getCheckExecutor()
+	 * @see #getProduceExecutor()
 	 */
 	@Override
 	public void close() throws IOException {
-		if(executor instanceof ExecutorService executorService) {
-			executorService.shutdown();
+		if(checkExecutor instanceof ExecutorService checkExecutorService) {
+			checkExecutorService.shutdown();
 			try {
-				if(!executorService.awaitTermination(3, TimeUnit.MINUTES)) {
-					executorService.shutdownNow();
-					if(!executorService.awaitTermination(1, TimeUnit.MINUTES)) {
-						throw new IOException("Imprint checking service not shut down properly.");
-					}
+				if(!checkExecutorService.awaitTermination(3, TimeUnit.MINUTES)) {
+					checkExecutorService.shutdownNow();
 				}
 			} catch(final InterruptedException interruptedException) {
-				executorService.shutdownNow();
+				checkExecutorService.shutdownNow();
 				Thread.currentThread().interrupt();
 			}
+		}
+		if(produceExecutor != checkExecutor && produceExecutor instanceof ExecutorService produceExecutorService) { //if we have separate executor services
+			produceExecutorService.shutdown();
+			try {
+				//allow time to write the information
+				if(!produceExecutorService.awaitTermination(30, TimeUnit.SECONDS)) {
+					produceExecutorService.shutdownNow();
+				}
+			} catch(final InterruptedException interruptedException) {
+				produceExecutorService.shutdownNow();
+				Thread.currentThread().interrupt();
+			}
+		}
+		try { //at this point both executor service should be shut down or requested to shut down now
+			if(checkExecutor instanceof ExecutorService checkExecutorService) {
+				if(!checkExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
+					throw new IOException("Imprint generator service not shut down properly; imprint generation may be incomplete.");
+				}
+			}
+			if(produceExecutor != checkExecutor && produceExecutor instanceof ExecutorService produceExecutorService) { //if we have separate executor services
+				if(!produceExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
+					throw new IOException("Imprint production service not shut down properly; all imprints may not have been written.");
+				}
+			}
+		} catch(final InterruptedException interruptedException) {
+			Thread.currentThread().interrupt();
 		}
 	}
 
@@ -125,6 +176,7 @@ public class PathChecker implements Closeable, Clogged {
 		getLogger().trace("Checking path `{}` against imprint {}.", path, imprint);
 		findListener().ifPresent(listener -> listener.onCheckPath(path, imprint));
 		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
+			findListener().ifPresent(listener -> listener.beforeCheckPath(path));
 			final Result result;
 			if(isRegularFile(path)) {
 				result = new FileResult(path, imprint);
@@ -135,24 +187,10 @@ public class PathChecker implements Closeable, Clogged {
 			} else {
 				throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
 			}
-			findListener().ifPresent(listener -> listener.onResult(result));
+			findListener().ifPresent(listener -> listener.afterCheckPath(path));
+			findResultConsumer().ifPresent(resultConsumer -> getProduceExecutor().execute(() -> resultConsumer.accept(result)));
 			return result;
-		}), getExecutor());
-	}
-
-	/**
-	 * Generates the fingerprint of a file's contents. Events are sent before and after fingerprint generation.
-	 * @param file The file for which a fingerprint should be generated of the contents.
-	 * @return The fingerprint of the file contents.
-	 * @throws IOException if there is a problem reading the content.
-	 * @see Listener#beforeGenerateFileContentFingerprint(Path)
-	 * @see Listener#afterGenerateFileContentFingerprint(Path)
-	 */
-	Hash generateFileContentFingerprint(@Nonnull final Path file) throws IOException {
-		findListener().ifPresent(listener -> listener.beforeGenerateFileContentFingerprint(file));
-		final Hash fingerprint = FINGERPRINT_ALGORITHM.hash(file);
-		findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
-		return fingerprint;
+		}), getCheckExecutor());
 	}
 
 	/**
@@ -292,7 +330,7 @@ public class PathChecker implements Closeable, Clogged {
 		 */
 		protected FileResult(@Nonnull final Path file, @Nonnull final PathImprint imprint) throws IOException {
 			super(file, imprint);
-			this.contentFingerprint = generateFileContentFingerprint(file);
+			this.contentFingerprint = FINGERPRINT_ALGORITHM.hash(file);
 			this.isContentFingerprintMatch = contentFingerprint.equals(imprint.contentFingerprint());
 		}
 
@@ -344,22 +382,16 @@ public class PathChecker implements Closeable, Clogged {
 		void onCheckPath(@Nonnull Path path, @Nonnull PathImprint imprint);
 
 		/**
-		 * Called immediately before fingerprint generation begins for the contents of a particular file.
-		 * @param file The file the fingerprint of which is to be generated.
+		 * Called immediately before checking a particular path.
+		 * @param path The path being checked.
 		 */
-		void beforeGenerateFileContentFingerprint(@Nonnull Path file);
+		void beforeCheckPath(@Nonnull Path path);
 
 		/**
-		 * Called immediately after fingerprint generation is completed for the contents of a particular file.
-		 * @param file The file the fingerprint of which has been generated.
+		 * Called immediately after checking a particular path.
+		 * @param path The path being checked.
 		 */
-		void afterGenerateFileContentFingerprint(@Nonnull Path file);
-
-		/**
-		 * Called when a path has been checked and the result is ready.
-		 * @param result The result of checking the path against an imprint.
-		 */
-		void onResult(@Nonnull Result result);
+		void afterCheckPath(@Nonnull Path path);
 
 	}
 
@@ -369,29 +401,88 @@ public class PathChecker implements Closeable, Clogged {
 	 */
 	public static class Builder {
 
-		private Executor executor = null;
+		private Executor checkExecutor = null;
 
 		/**
-		 * Specifies the executor; if not set, a {@link #newDefaultExecutor()} will be created and used.
-		 * @param executor The executor for checking imprints; may or may not be an instance of {@link ExecutorService}.
+		 * Specifies the check executor; if not set, a {@link #newDefaultCheckExecutor()} will be created and used.
+		 * @param checkExecutor The executor for checking paths; may or may not be an instance of {@link ExecutorService}, and may or may not be the same executor
+		 *          as {@link #withProduceExecutor(Executor)}.
 		 * @return This builder.
-		 * @throws IllegalStateException if a executor-setting method is called twice on the builder.
+		 * @throws IllegalStateException if a check executor-setting method is called twice on the builder.
 		 */
-		public Builder withExecutor(@Nonnull final Executor executor) {
-			checkState(this.executor == null, "Executor already specified.");
-			this.executor = requireNonNull(executor);
+		public Builder withCheckExecutor(@Nonnull final Executor checkExecutor) {
+			checkState(this.checkExecutor == null, "Check executor already specified.");
+			this.checkExecutor = requireNonNull(checkExecutor);
 			return this;
 		}
 
 		/**
-		 * Determines the executor to use based upon the current settings.
-		 * @return The specified executor.
+		 * Determines the check executor to use based upon the current settings.
+		 * @return The specified check executor.
 		 */
-		private Executor determineExecutor() {
-			if(executor != null) {
-				return executor;
+		private Executor determineCheckExecutor() {
+			if(checkExecutor != null) {
+				return checkExecutor;
 			}
-			return newDefaultExecutor();
+			return newDefaultCheckExecutor();
+		}
+
+		private Executor produceExecutor;
+
+		/**
+		 * Specifies the produce executor; if not set, a {@link #newDefaultProduceExecutor()} will be created and used.
+		 * @param produceExecutor The executor for producing imprints; may or may not be an instance of {@link ExecutorService}, and may or may not be the same
+		 *          executor as {@link #withCheckExecutor(Executor)}.
+		 * @throws IllegalStateException if a produce executor-setting method is called twice on the builder.
+		 * @return This builder.
+		 */
+		public Builder withProduceExecutor(@Nonnull final Executor produceExecutor) {
+			checkState(this.produceExecutor == null, "Produce executor already specified.");
+			this.produceExecutor = requireNonNull(produceExecutor);
+			return this;
+		}
+
+		/**
+		 * Determines the produce executor to use based upon the current settings.
+		 * @return The specified produce executor.
+		 */
+		private Executor determineProduceExecutor() {
+			return produceExecutor != null ? produceExecutor : newDefaultProduceExecutor();
+		}
+
+		/**
+		 * Specifies a single executor to use as the check executor and as the produce executor.
+		 * @apiNote This method is used primarily for testing; typically it is less efficient to have the same executor for checking and production.
+		 * @param executor The executor for checking paths and producing results.
+		 * @return This builder.
+		 * @throws IllegalStateException if a check executor-setting method or a produce executor-setting method is called twice on the builder.
+		 * @see #withCheckExecutor(Executor)
+		 * @see #withProduceExecutor(Executor)
+		 */
+		public Builder withExecutor(@Nonnull final Executor executor) {
+			checkState(this.checkExecutor == null, "Check executor already specified.");
+			checkState(this.produceExecutor == null, "Produce executor already specified.");
+			this.checkExecutor = requireNonNull(executor);
+			this.produceExecutor = requireNonNull(executor);
+			return this;
+		}
+
+		@Nullable
+		private Consumer<Result> resultConsumer = null;
+
+		/** @return The configured result consumer, if any. */
+		private Optional<Consumer<Result>> findResultConsumer() {
+			return Optional.ofNullable(resultConsumer);
+		}
+
+		/**
+		 * Specifies the result consumer.
+		 * @param resultConsumer The consumer to which results will be produced after a path is checked.
+		 * @return This builder.
+		 */
+		public Builder withResultConsumer(@Nonnull final Consumer<Result> resultConsumer) {
+			this.resultConsumer = requireNonNull(resultConsumer);
+			return this;
 		}
 
 		@Nullable
@@ -422,11 +513,20 @@ public class PathChecker implements Closeable, Clogged {
 		}
 
 		/**
-		 * Returns a default executor.
-		 * @return A new default executor.
+		 * Returns a default executor for checking paths.
+		 * @return A new default check executor.
 		 */
-		public static Executor newDefaultExecutor() {
+		public static Executor newDefaultCheckExecutor() {
 			return newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+		}
+
+		/**
+		 * Returns a default executor for production of results.
+		 * @implSpec This implementation returns an executor using a single thread with normal priority.
+		 * @return A new default produce executor.
+		 */
+		public static Executor newDefaultProduceExecutor() {
+			return newSingleThreadExecutor();
 		}
 
 	}

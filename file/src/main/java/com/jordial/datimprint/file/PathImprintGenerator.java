@@ -251,10 +251,10 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	public CompletableFuture<PathImprint> produceImprintAsync(@Nonnull final Path path) throws IOException {
 		final CompletableFuture<PathImprint> futureGeneratedImprint = generateImprintAsync(path);
 		//only schedule producing the imprint in the future if we have an imprint consumer
-		return findImprintConsumer().map(imprintConsumer -> futureGeneratedImprint.thenApplyAsync(imprint -> {
-			imprintConsumer.accept(imprint);
+		return findImprintConsumer().map(imprintConsumer -> futureGeneratedImprint.thenApply(imprint -> {
+			getProduceExecutor().execute(() -> imprintConsumer.accept(imprint));
 			return imprint;
-		}, getProduceExecutor())).orElse(futureGeneratedImprint); //otherwise the future generated imprint is all we need
+		})).orElse(futureGeneratedImprint); //otherwise the future generated imprint is all we need
 	}
 
 	/**
@@ -386,7 +386,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * </p>
 	 * @author Garret Wilson
 	 */
-	public interface Listener { //TODO move to PathImprintGenerator
+	public interface Listener {
 
 		/**
 		 * Called when generation of an imprint is being scheduled for a path.
@@ -503,7 +503,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		 * @return This builder.
 		 */
 		public Builder withProduceExecutor(@Nonnull final Executor produceExecutor) {
-			checkState(this.produceExecutor == null && this.produceExecutor == null, "Produce executor already specified.");
+			checkState(this.produceExecutor == null, "Produce executor already specified.");
 			this.produceExecutor = requireNonNull(produceExecutor);
 			return this;
 		}
@@ -527,7 +527,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		 */
 		public Builder withExecutor(@Nonnull final Executor executor) {
 			checkState(this.generateExecutor == null && this.generateExecutorType == null, "Generate executor already specified.");
-			checkState(this.produceExecutor == null && this.produceExecutor == null, "Produce executor already specified.");
+			checkState(this.produceExecutor == null, "Produce executor already specified.");
 			this.generateExecutor = requireNonNull(executor);
 			this.produceExecutor = requireNonNull(executor);
 			return this;
