@@ -181,7 +181,7 @@ public class DatimTest {
 	@Test
 	void testSerializerAppendImprint() throws IOException {
 		final Path mockFilePath = mock(Path.class);
-		when(mockFilePath.toAbsolutePath()).thenReturn(mockFilePath);
+		when(mockFilePath.toRealPath(any())).thenReturn(mockFilePath);
 		final Path mockFileNamePath = mock(Path.class);
 		final String filename = "foo.bar";
 		when(mockFilePath.toString()).thenReturn("/" + filename);

@@ -20,6 +20,8 @@ import static com.globalmentor.io.Paths.*;
 import static com.globalmentor.java.Conditions.*;
 import static com.jordial.datimprint.file.PathImprintGenerator.FINGERPRINT_ALGORITHM;
 import static java.nio.file.Files.*;
+import static java.nio.file.LinkOption.*;
+import static java.util.Collections.*;
 import static java.util.Objects.*;
 import static java.util.concurrent.Executors.*;
 import static org.zalando.fauxpas.FauxPas.*;
@@ -199,6 +201,16 @@ public class PathChecker implements Closeable, Clogged {
 	 */
 	public sealed interface Result {
 
+		/** The types of mismatches, in order from most severe to least severe. */
+		public enum Mismatch {
+			/** The content fingerprint did not match. */
+			CONTENT_FINGERPRINT,
+			/** The content modification timestamp did not match. */
+			CONTENT_MODIFIED_AT,
+			/** The filenames did not match. This is only expect to occur on systems that ignore filename case, such as Windows. */
+			FILENAME;
+		}
+
 		/** @return The path being checked. */
 		public Path getPath();
 
@@ -207,6 +219,9 @@ public class PathChecker implements Closeable, Clogged {
 
 		/** @return <code>true</code> if the path matched the imprint. */
 		boolean isMatch();
+
+		/** @return All the ways in which the path did not match the imprint. */
+		public Set<Mismatch> getMismatches();
 
 	}
 
@@ -262,42 +277,76 @@ public class PathChecker implements Closeable, Clogged {
 			return false;
 		}
 
+		/**
+		 * {@inheritDoc}
+		 * @implSpec This implementation returns an empty set, because technically a missing path neither matches nor mismatches the imprint.
+		 */
+		@Override
+		public Set<Mismatch> getMismatches() {
+			return Set.of();
+		}
+
 	}
 
 	/**
-	 * Base implementation for file and directory results.
+	 * Base implementation for file and directory results. The path must exist, and all subclasses are be guaranteed to return the real file system path for
+	 * {@link #getPath()}.
 	 * @author Garret Wilson
 	 */
-	protected abstract sealed class BaseResult extends AbstractResult {
-
-		private final boolean isFilenameMatch;
-
-		/** @return Whether the filename of the imprint match exactly, with regard to case. */
-		public boolean isFilenameMatch() {
-			return isFilenameMatch;
-		}
+	public abstract sealed class ExistingPathResult extends AbstractResult {
 
 		private final FileTime contentModifiedAt;
 
-		private final boolean isContentModifiedAtMatch;
+		/** @return The modification timestamp of the path. */
+		public FileTime getContentModifiedAt() {
+			return contentModifiedAt;
+		}
 
-		/** @return Whether the content modification timestamps match. */
-		public boolean isContentModifiedAtMatch() {
-			return isContentModifiedAtMatch;
+		/**
+		 * {@inheritDoc}
+		 * @implSpec This implementation returns <code>true</code> if there are no mismatches in {@link #getMismatches()}.
+		 */
+		@Override
+		public boolean isMatch() {
+			return getMismatches().isEmpty();
+		}
+
+		private Set<Mismatch> mismatches = EnumSet.noneOf(Mismatch.class);
+
+		@Override
+		public Set<Mismatch> getMismatches() {
+			return mismatches;
+		}
+
+		/**
+		 * Adds mismatches to those currently known mismatches.
+		 * @apiNote This method is primarily for subclasses to add additional mismatches after base class construction.
+		 * @param moreMismatches The additional mismatches to add.
+		 */
+		protected void addMismatches(@Nonnull final Set<Mismatch> moreMismatches) {
+			final EnumSet<Mismatch> mismatches = EnumSet.copyOf(this.mismatches);
+			mismatches.addAll(moreMismatches);
+			this.mismatches = unmodifiableSet(mismatches);
 		}
 
 		/**
 		 * Constructor.
-		 * @param path The path being checked.
+		 * @param path The path being checked; converted to the real path of the file system without following links, to ensure a unique path and the correct case.
 		 * @param imprint The imprint against which the path is being checked.
 		 * @throws IOException if there is an error getting additional information about the path.
 		 */
-		protected BaseResult(@Nonnull final Path path, @Nonnull final PathImprint imprint) throws IOException {
-			super(path, imprint);
-			//TODO retrieve the actual filename name from the file; the one that was passed was generated
-			this.isFilenameMatch = findFilename(path).equals(findFilename(imprint.path()));
+		protected ExistingPathResult(@Nonnull final Path path, @Nonnull final PathImprint imprint) throws IOException {
+			super(path.toRealPath(NOFOLLOW_LINKS), imprint);
+			final EnumSet<Mismatch> moreMismatches = EnumSet.noneOf(Mismatch.class);
+			//check the filename against the path saved in the base class, which has been converted to the real path (i.e. true case)
+			if(!findFilename(getPath()).equals(findFilename(imprint.path()))) {
+				moreMismatches.add(Mismatch.FILENAME);
+			}
 			this.contentModifiedAt = getLastModifiedTime(path);
-			this.isContentModifiedAtMatch = contentModifiedAt.equals(imprint.contentModifiedAt());
+			if(!contentModifiedAt.equals(imprint.contentModifiedAt())) {
+				moreMismatches.add(Mismatch.CONTENT_MODIFIED_AT);
+			}
+			addMismatches(moreMismatches);
 		}
 
 	}
@@ -306,20 +355,13 @@ public class PathChecker implements Closeable, Clogged {
 	 * The result of a file check.
 	 * @author Garret Wilson
 	 */
-	public final class FileResult extends BaseResult {
+	public final class FileResult extends ExistingPathResult {
 
 		private final Hash contentFingerprint;
 
 		/** @return The calculated fingerprint of the file. */
 		public Hash getContentFingerprint() {
 			return contentFingerprint;
-		}
-
-		private final boolean isContentFingerprintMatch;
-
-		/** @return Whether the imprint content fingerprint matched that of the file. */
-		public boolean isContentFingerprintMatch() {
-			return isContentFingerprintMatch;
 		}
 
 		/**
@@ -331,12 +373,11 @@ public class PathChecker implements Closeable, Clogged {
 		protected FileResult(@Nonnull final Path file, @Nonnull final PathImprint imprint) throws IOException {
 			super(file, imprint);
 			this.contentFingerprint = FINGERPRINT_ALGORITHM.hash(file);
-			this.isContentFingerprintMatch = contentFingerprint.equals(imprint.contentFingerprint());
-		}
-
-		@Override
-		public boolean isMatch() {
-			return isFilenameMatch() && isContentModifiedAtMatch() && isContentFingerprintMatch();
+			final EnumSet<Mismatch> moreMismatches = EnumSet.noneOf(Mismatch.class);
+			if(!contentFingerprint.equals(imprint.contentFingerprint())) {
+				moreMismatches.add(Mismatch.CONTENT_FINGERPRINT);
+			}
+			addMismatches(moreMismatches);
 		}
 
 	}
@@ -345,7 +386,7 @@ public class PathChecker implements Closeable, Clogged {
 	 * The result of a directory check.
 	 * @author Garret Wilson
 	 */
-	public final class DirectoryResult extends BaseResult {
+	public final class DirectoryResult extends ExistingPathResult {
 
 		/**
 		 * Constructor.
@@ -355,12 +396,6 @@ public class PathChecker implements Closeable, Clogged {
 		 */
 		protected DirectoryResult(@Nonnull final Path directory, @Nonnull final PathImprint imprint) throws IOException {
 			super(directory, imprint);
-		}
-
-		@Override
-		public boolean isMatch() {
-			//TODO check ignoreDirectoryModification flag
-			return isFilenameMatch() && isContentModifiedAtMatch();
 		}
 
 	}

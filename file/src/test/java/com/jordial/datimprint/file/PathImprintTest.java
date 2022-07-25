@@ -40,7 +40,7 @@ public class PathImprintTest {
 	@Test
 	void testForFile() throws IOException {
 		final Path mockFilePath = mock(Path.class);
-		when(mockFilePath.toAbsolutePath()).thenReturn(mockFilePath);
+		when(mockFilePath.toRealPath(any())).thenReturn(mockFilePath);
 		final Path mockFileNamePath = mock(Path.class);
 		final String filename = "foo.bar";
 		when(mockFileNamePath.toString()).thenReturn(filename);
@@ -60,7 +60,7 @@ public class PathImprintTest {
 	@Test
 	void testForDirectory() throws IOException {
 		final Path mockDirectoryPath = mock(Path.class);
-		when(mockDirectoryPath.toAbsolutePath()).thenReturn(mockDirectoryPath);
+		when(mockDirectoryPath.toRealPath(any())).thenReturn(mockDirectoryPath);
 		final Path mockDirectoryFileNamePath = mock(Path.class);
 		final String directoryfilename = "foobar";
 		when(mockDirectoryFileNamePath.toString()).thenReturn(directoryfilename);
@@ -69,7 +69,7 @@ public class PathImprintTest {
 
 		//foo child file
 		final Path mockFooFilePath = mock(Path.class);
-		when(mockFooFilePath.toAbsolutePath()).thenReturn(mockFooFilePath);
+		when(mockFooFilePath.toRealPath(any())).thenReturn(mockFooFilePath);
 		final Path mockFooFileFileNamePath = mock(Path.class);
 		final String fooFilename = "foo.txt";
 		when(mockFooFileFileNamePath.toString()).thenReturn(fooFilename);
@@ -80,7 +80,7 @@ public class PathImprintTest {
 
 		//bar child file
 		final Path mockBarFilePath = mock(Path.class);
-		when(mockBarFilePath.toAbsolutePath()).thenReturn(mockBarFilePath);
+		when(mockBarFilePath.toRealPath(any())).thenReturn(mockBarFilePath);
 		final Path mockBarFileFileNamePath = mock(Path.class);
 		final String barFilename = "bar.txt";
 		when(mockBarFileFileNamePath.toString()).thenReturn(barFilename);

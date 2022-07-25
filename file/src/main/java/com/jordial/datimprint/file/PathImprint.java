@@ -17,9 +17,11 @@
 package com.jordial.datimprint.file;
 
 import static com.globalmentor.java.Longs.*;
+import static java.nio.file.LinkOption.*;
 import static java.util.Objects.*;
 
-import java.nio.file.Path;
+import java.io.IOException;
+import java.nio.file.*;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 
@@ -48,7 +50,7 @@ import com.globalmentor.security.*;
  * level below the current path; this value will only be present for directories. Finally the fingerprint of the path itself includes the content and children
  * fingerprints.
  * </p>
- * @param path The path being described; guaranteed to be absolute.
+ * @param path The path being described.
  * @param contentModifiedAt The modification timestamp of the file.
  * @param contentFingerprint The fingerprint of the contents of a file, or for a directory, of all the content fingerprints of the children.
  * @param fingerprint The full fingerprint of the file or directory, including its name, attribute, content, and children fingerprint.
@@ -61,13 +63,13 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime contentModifiedA
 
 	/**
 	 * Constructor for argument validation and normalization.
-	 * @param path The path being described; normalized to the absolute path.
+	 * @param path The path being described; should be an absolute path, although this is not checked to allow reading paths from other file systems
 	 * @param contentModifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the contents of a file, or of the child fingerprints of a directory.
 	 * @param fingerprint The full fingerprint of the file or directory, including its path, modification timestamp, and content fingerprint.
 	 */
 	public PathImprint {
-		path = path.toAbsolutePath();
+		requireNonNull(path);
 		requireNonNull(contentModifiedAt);
 		requireNonNull(contentFingerprint);
 		requireNonNull(fingerprint);
@@ -86,17 +88,20 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime contentModifiedA
 	 * Generates an imprint of a single path given the modification timestamp and pre-generated hash of the path contents.
 	 * @implSpec The overall fingerprint is generated using
 	 *           {@link #generateFingerprint(Path, FileTime, Hash, Hash, com.globalmentor.security.MessageDigests.Algorithm)}.
-	 * @param file The path of the file for which an imprint should be generated.
+	 * @param file The path of the file for which an imprint should be generated; converted to the real path of the file system without following links, to ensure
+	 *          a unique path and the correct case.
 	 * @param contentModifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the contents of the file.
 	 * @param fingerprintAlgorithm The algorithm for calculating fingerprints.
 	 * @return An imprint for the file.
 	 * @throws IllegalArgumentException if the path has no filename.
+	 * @throws IOException if there is an error determining the real path.
 	 * @see Path#getFileName()
+	 * @see Path#toRealPath(LinkOption...)
 	 */
 	public static PathImprint forFile(@Nonnull final Path file, @Nonnull final FileTime contentModifiedAt, @Nonnull final Hash contentFingerprint,
-			@Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) {
-		return new PathImprint(file, contentModifiedAt, contentFingerprint,
+			@Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) throws IOException {
+		return new PathImprint(file.toRealPath(NOFOLLOW_LINKS), contentModifiedAt, contentFingerprint,
 				generateFingerprint(file, contentModifiedAt, contentFingerprint, null, fingerprintAlgorithm));
 	}
 
@@ -104,7 +109,8 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime contentModifiedA
 	 * Generates an imprint of a single path given the modification timestamp and pre-generated hash of the path contents.
 	 * @implSpec The overall fingerprint is generated using
 	 *           {@link #generateFingerprint(Path, FileTime, Hash, Hash, com.globalmentor.security.MessageDigests.Algorithm)}.
-	 * @param directory The path of the directory for which an imprint should be generated.
+	 * @param directory The path of the directory for which an imprint should be generated; converted to the real path of the file system without following links,
+	 *          to ensure a unique path and the correct case.
 	 * @param contentModifiedAt The modification timestamp of the file.
 	 * @param contentFingerprint The fingerprint of the child content fingerprints of the directory.
 	 * @param childrenFingerprint The fingerprint of the the child fingerprints of the directory. Note that an empty directory is still expected to have a
@@ -112,11 +118,13 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime contentModifiedA
 	 * @param fingerprintAlgorithm The algorithm for calculating fingerprints.
 	 * @return An imprint for the directory.
 	 * @throws IllegalArgumentException if the path has no filename.
+	 * @throws IOException if there is an error determining the real path.
 	 * @see Path#getFileName()
+	 * @see Path#toRealPath(LinkOption...)
 	 */
 	public static PathImprint forDirectory(@Nonnull final Path directory, @Nonnull final FileTime contentModifiedAt, @Nonnull final Hash contentFingerprint,
-			@Nonnull final Hash childrenFingerprint, @Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) {
-		return new PathImprint(directory, contentModifiedAt, contentFingerprint,
+			@Nonnull final Hash childrenFingerprint, @Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) throws IOException {
+		return new PathImprint(directory.toRealPath(NOFOLLOW_LINKS), contentModifiedAt, contentFingerprint,
 				generateFingerprint(directory, contentModifiedAt, contentFingerprint, childrenFingerprint, fingerprintAlgorithm));
 	}
 

@@ -19,6 +19,7 @@ package com.jordial.datimprint.cli;
 import static com.globalmentor.io.Paths.*;
 import static java.nio.charset.StandardCharsets.*;
 import static java.nio.file.Files.*;
+import static java.util.Comparator.*;
 import static java.util.stream.Collectors.*;
 import static org.fusesource.jansi.Ansi.*;
 import static org.zalando.fauxpas.FauxPas.*;
@@ -94,7 +95,7 @@ public class DatimprintCli extends BaseCliApplication {
 				"Generating imprint for %s ...".formatted(argDataPaths.stream().map(Path::toAbsolutePath).map(path -> "`%s`".formatted(path)).collect(joining(", "))))
 				.reset());
 		final Duration timeElapsed;
-		try (final GenerateStatusPrinter statusPrinter = new GenerateStatusPrinter()) {
+		try (final GenerateCliStatus statusPrinter = new GenerateCliStatus()) {
 			final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
 			try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
 				final Datim.Serializer datimSerializer = new Datim.Serializer();
@@ -146,9 +147,9 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @implNote The printed count is based upon the traversal/generation status, and is independent of the line numbers placed in the file.
 	 * @author Garret Wilson
 	 */
-	private class GenerateStatusPrinter extends CliStatus<Path> implements PathImprintGenerator.Listener {
+	private class GenerateCliStatus extends CliStatus<Path> implements PathImprintGenerator.Listener {
 
-		public GenerateStatusPrinter() {
+		public GenerateCliStatus() {
 			super(System.err);
 		}
 
@@ -188,7 +189,7 @@ public class DatimprintCli extends BaseCliApplication {
 	public void check(
 			@Parameters(paramLabel = "<data>", description = "The file or base directory of the file(s) to be checked.", arity = "1..*") @Nonnull Path argDataPath,
 			@Option(names = {"--imprint",
-					"-i"}, description = "The file containing imprints against which to check the data files.", arity = "1") Path argImprintFile) //TODO fix required
+					"-i"}, description = "The file containing imprints against which to check the data files.", required = true) Path argImprintFile)
 			//TODO @Option(names = {"--imprint-charset"}, description = "The charset of the imprints file. If not provided, detected from the any BOM, defaulting to UTF-8.") Optional<Charset> argImprintCharset)
 			throws IOException {
 
@@ -198,8 +199,7 @@ public class DatimprintCli extends BaseCliApplication {
 
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(argDataPath, argImprintFile)).reset());
 		final Duration timeElapsed;
-		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile));
-				final CheckStatusPrinter statusPrinter = new CheckStatusPrinter()) {
+		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile)); final CheckCliStatus statusPrinter = new CheckCliStatus()) {
 			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder().withResultConsumer(statusPrinter);
 			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 				pathCheckerBuilder.withListener(statusPrinter);
@@ -233,9 +233,9 @@ public class DatimprintCli extends BaseCliApplication {
 	 * </p>
 	 * @author Garret Wilson
 	 */
-	private class CheckStatusPrinter extends CliStatus<Path> implements PathChecker.Listener, Consumer<PathChecker.Result> {
+	private class CheckCliStatus extends CliStatus<Path> implements PathChecker.Listener, Consumer<PathChecker.Result> {
 
-		public CheckStatusPrinter() {
+		public CheckCliStatus() {
 			super(System.err);
 		}
 
@@ -248,34 +248,41 @@ public class DatimprintCli extends BaseCliApplication {
 		}
 
 		@Override
-		public void beforeCheckPath(final Path file) {
-			addWork(file);
+		public void beforeCheckPath(final Path path) {
+			addWork(path);
 		}
 
 		@Override
-		public void afterCheckPath(final Path file) {
-			removeWork(file);
+		public void afterCheckPath(final Path path) {
+			removeWork(path); //TODO find out why work doesn't seem to be removed as quickly as with generation, and some work not showing on the status as being removed at all
 		}
 
 		@Override
 		public void accept(final PathChecker.Result result) {
 			if(!result.isMatch()) {
-				printLine(toReport(result));
-			}
-		}
-
-		/**
-		 * Determines a string for reporting a result.
-		 * @param result The result being reported.
-		 * @return The report message to provide the user.
-		 */
-		protected String toReport(@Nonnull final PathChecker.Result result) {
-			//TODO improve with warnings vs errors
-			//TODO add report for matching results in case needed in the future
-			if(result instanceof PathChecker.MissingPathResult) {
-				return "No path `%s` matching imprint `%s`.".formatted(result.getPath(), result.getImprint().path());
-			} else {
-				return "Path `%s` does not match imprint `%s`.".formatted(result.getPath(), result.getImprint().path());
+				final String notificationText = result instanceof PathChecker.MissingPathResult
+						? "No path `%s` matching imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path())
+						: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
+				notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
+				//create the entire report string rather than printing each asynchronously to prevent the lines becoming separated
+				final StringBuilder reportBuilder = new StringBuilder(notificationText);
+				//add report detail lines for paths that exist
+				if(result instanceof PathChecker.ExistingPathResult existingPathResult) {
+					existingPathResult.getMismatches().stream().sorted(comparingInt(PathChecker.Result.Mismatch::ordinal)) //sort by ordinal to show most severe problems first
+							.forEach(mismatch -> {
+								final String detailText = switch(mismatch) {
+									//TODO it would be best not to assume the result type just because there was a content fingerprint mismatch
+									case CONTENT_FINGERPRINT -> "Path content fingerprint `%s` did not match `%s` of the imprint."
+											.formatted(((PathChecker.FileResult)result).getContentFingerprint(), existingPathResult.getImprint().contentFingerprint());
+									case CONTENT_MODIFIED_AT -> "Path modification timestamp %s did not match %s of the imprint."
+											.formatted(existingPathResult.getContentModifiedAt(), existingPathResult.getImprint().contentModifiedAt());
+									case FILENAME -> "Path filename `%s` did not match `%s` of the imprint.".formatted(existingPathResult.getPath().getFileName(),
+											existingPathResult.getImprint().path().getFileName());
+								};
+								reportBuilder.append(System.lineSeparator()).append("  * ").append(detailText); //* ...
+							});
+				}
+				printLineAsync(reportBuilder); //print a report in addition to the status notification TODO add option to send to System.out or save in a file
 			}
 		}
 
