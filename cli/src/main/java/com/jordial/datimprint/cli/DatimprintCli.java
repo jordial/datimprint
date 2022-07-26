@@ -95,7 +95,7 @@ public class DatimprintCli extends BaseCliApplication {
 				"Generating imprint for %s ...".formatted(argDataPaths.stream().map(Path::toAbsolutePath).map(path -> "`%s`".formatted(path)).collect(joining(", "))))
 				.reset());
 		final Duration timeElapsed;
-		try (final GenerateCliStatus statusPrinter = new GenerateCliStatus()) {
+		try (final GenerateStatus status = new GenerateStatus()) {
 			final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
 			try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
 				final Datim.Serializer datimSerializer = new Datim.Serializer();
@@ -106,7 +106,7 @@ public class DatimprintCli extends BaseCliApplication {
 					final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> datimSerializer.appendImprint(writer, imprint, counter.incrementAndGet()));
 					final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer);
 					if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
-						imprintGeneratorBuilder.withListener(statusPrinter);
+						imprintGeneratorBuilder.withListener(status);
 					}
 					argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
 					try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
@@ -131,7 +131,7 @@ public class DatimprintCli extends BaseCliApplication {
 					outputStream.flush();
 				}
 			}
-			timeElapsed = statusPrinter.getElapsedTime();
+			timeElapsed = status.getElapsedTime();
 		}
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
 				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(timeElapsed.toHours(), timeElapsed.toMinutesPart(), timeElapsed.toSecondsPart())).reset());
@@ -143,12 +143,12 @@ public class DatimprintCli extends BaseCliApplication {
 	 * <p>
 	 * If {@link DatimprintCli#isVerbose()} is enabled, directories will be printed as they are entered.
 	 * </p>
-	 * @implNote The printed count is based upon the traversal/generation status, and is independent of the line numbers placed in the file.
+	 * @implNote The status count is based upon the traversal/generation status, and is independent of the line numbers placed in the file.
 	 * @author Garret Wilson
 	 */
-	private class GenerateCliStatus extends CliStatus<Path> implements PathImprintGenerator.Listener {
+	private class GenerateStatus extends CliStatus<Path> implements PathImprintGenerator.Listener {
 
-		public GenerateCliStatus() {
+		public GenerateStatus() {
 			super(System.err);
 		}
 
@@ -199,10 +199,37 @@ public class DatimprintCli extends BaseCliApplication {
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(argDataPath, argImprintFile)).reset());
 		final Duration timeElapsed;
 		final AtomicReference<Optional<Throwable>> foundErrorReference = new AtomicReference<>(Optional.empty());
-		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile)); final CheckCliStatus statusPrinter = new CheckCliStatus()) {
-			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder().withResultConsumer(statusPrinter);
+		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile)); final CheckStatus status = new CheckStatus()) {
+			final Consumer<PathChecker.Result> resultConsumer = throwingConsumer(result -> {
+				if(!result.isMatch()) {
+					final String notificationText = result instanceof PathChecker.MissingPathResult
+							? "No path `%s` matching imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path())
+							: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
+					status.notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
+					//create the entire report string rather than printing each asynchronously to prevent the lines becoming separated
+					final List<String> report = new ArrayList<>();
+					report.add("- " + notificationText); //`- error` 
+					//add report detail lines for paths that exist
+					if(result instanceof PathChecker.ExistingPathResult existingPathResult) {
+						existingPathResult.getMismatches().stream().sorted(comparingInt(PathChecker.Result.Mismatch::ordinal)) //sort by ordinal to show most severe problems first
+								.map(mismatch -> {
+									return "  * " + switch(mismatch) { //`  * detail`
+										//TODO it would be best not to assume the result type just because there was a content fingerprint mismatch
+										case CONTENT_FINGERPRINT -> "Path content fingerprint `%s` did not match `%s` of the imprint."
+												.formatted(((PathChecker.FileResult)result).getContentFingerprint(), existingPathResult.getImprint().contentFingerprint());
+										case CONTENT_MODIFIED_AT -> "Path modification timestamp %s did not match %s of the imprint."
+												.formatted(existingPathResult.getContentModifiedAt(), existingPathResult.getImprint().contentModifiedAt());
+										case FILENAME -> "Path filename `%s` did not match `%s` of the imprint.".formatted(existingPathResult.getPath().getFileName(),
+												existingPathResult.getImprint().path().getFileName());
+									};
+								}).forEachOrdered(report::add);
+					}
+					status.printLinesAsync(report); //print a report in addition to the status notification TODO add option to send to System.out or save in a file
+				}
+			});
+			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder().withResultConsumer(resultConsumer);
 			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
-				pathCheckerBuilder.withListener(statusPrinter);
+				pathCheckerBuilder.withListener(status);
 			}
 			try (final PathChecker pathChecker = pathCheckerBuilder.build()) {
 				final Datim.Parser parser = new Datim.Parser(inputStream);
@@ -225,7 +252,7 @@ public class DatimprintCli extends BaseCliApplication {
 					throw throwable;
 				}));
 			}
-			timeElapsed = statusPrinter.getElapsedTime();
+			timeElapsed = status.getElapsedTime();
 		}
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
 				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(timeElapsed.toHours(), timeElapsed.toMinutesPart(), timeElapsed.toSecondsPart())).reset());
@@ -240,9 +267,9 @@ public class DatimprintCli extends BaseCliApplication {
 	 * </p>
 	 * @author Garret Wilson
 	 */
-	private class CheckCliStatus extends CliStatus<Path> implements PathChecker.Listener, Consumer<PathChecker.Result> {
+	private class CheckStatus extends CliStatus<Path> implements PathChecker.Listener {
 
-		public CheckCliStatus() {
+		public CheckStatus() {
 			super(System.err);
 		}
 
@@ -262,35 +289,6 @@ public class DatimprintCli extends BaseCliApplication {
 		@Override
 		public void afterCheckPath(final Path path) {
 			removeWork(path);
-		}
-
-		@Override
-		public void accept(final PathChecker.Result result) {
-			if(!result.isMatch()) {
-				final String notificationText = result instanceof PathChecker.MissingPathResult
-						? "No path `%s` matching imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path())
-						: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
-				notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
-				//create the entire report string rather than printing each asynchronously to prevent the lines becoming separated
-				final List<String> report = new ArrayList<>();
-				report.add(notificationText);
-				//add report detail lines for paths that exist
-				if(result instanceof PathChecker.ExistingPathResult existingPathResult) {
-					existingPathResult.getMismatches().stream().sorted(comparingInt(PathChecker.Result.Mismatch::ordinal)) //sort by ordinal to show most severe problems first
-							.map(mismatch -> {
-								return "  * " + switch(mismatch) {
-									//TODO it would be best not to assume the result type just because there was a content fingerprint mismatch
-									case CONTENT_FINGERPRINT -> "Path content fingerprint `%s` did not match `%s` of the imprint."
-											.formatted(((PathChecker.FileResult)result).getContentFingerprint(), existingPathResult.getImprint().contentFingerprint());
-									case CONTENT_MODIFIED_AT -> "Path modification timestamp %s did not match %s of the imprint."
-											.formatted(existingPathResult.getContentModifiedAt(), existingPathResult.getImprint().contentModifiedAt());
-									case FILENAME -> "Path filename `%s` did not match `%s` of the imprint.".formatted(existingPathResult.getPath().getFileName(),
-											existingPathResult.getImprint().path().getFileName());
-								};
-							}).forEachOrdered(report::add);
-				}
-				printLinesAsync(report); //print a report in addition to the status notification TODO add option to send to System.out or save in a file
-			}
 		}
 
 	}

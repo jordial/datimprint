@@ -21,6 +21,7 @@ import static com.globalmentor.java.Conditions.*;
 import static java.nio.file.Files.*;
 import static java.util.Comparator.*;
 import static java.util.Objects.*;
+import static java.util.concurrent.CompletableFuture.*;
 import static java.util.concurrent.Executors.*;
 import static java.util.function.Function.*;
 import static java.util.stream.Collectors.*;
@@ -32,6 +33,7 @@ import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.*;
 import java.util.stream.Stream;
 
@@ -50,6 +52,10 @@ import io.clogr.Clogged;
  * @apiNote The word "contents" is used when referring to what a file or directory contains, while "content" is used as an adjective, such as "content
  *          fingerprint".
  * @implSpec By default symbolic links are followed.
+ * @implSpec Any generation error will be propagated to the caller via {@link CompletableFuture}. Any production error will cause production to cease, but it
+ *           will only be reported when it is eventually thrown during {@link #close()}.
+ * @implNote This implementation assumes that requested paths exist, and will throw a {@link FileNotFoundException} if not. Thus this class cannot reliably be
+ *           used on a file tree which has files and directories being removed dynamically.
  * @author Garret Wilson
  */
 public class PathImprintGenerator implements Closeable, Clogged {
@@ -175,7 +181,8 @@ public class PathImprintGenerator implements Closeable, Clogged {
 
 	/**
 	 * {@inheritDoc}
-	 * @implSpec This implementation shuts down each executor if it is an instance of {@link ExecutorService}.
+	 * @implSpec This implementation shuts down each executor if it is an instance of {@link ExecutorService}. If there was any error that occurred during
+	 *           production, it will be thrown after the executors are shut down.
 	 * @throws IOException If one of the executor services could not be shut down.
 	 * @see #getGenerateExecutor()
 	 * @see #getProduceExecutor()
@@ -220,6 +227,9 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		} catch(final InterruptedException interruptedException) {
 			Thread.currentThread().interrupt();
 		}
+		foundProduceErrorReference.get().ifPresent(throwingConsumer(throwable -> { //propagate any production error
+			throw throwable instanceof IOException ? (IOException)throwable : new IOException("Production error.", throwable);
+		}));
 	}
 
 	/**
@@ -237,6 +247,9 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		return produceImprintAsync(path).join();
 	}
 
+	/** Record of any error encountered while producing. A present value suspends production and causes the exception to be thrown during {@link #close()}. */
+	private final AtomicReference<Optional<Throwable>> foundProduceErrorReference = new AtomicReference<>(Optional.empty());
+
 	/**
 	 * Asynchronously generates an imprint of a single path, which must be a regular file or a directory, and then produces it to the imprint consumer, if there
 	 * is one.
@@ -250,9 +263,13 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 */
 	public CompletableFuture<PathImprint> produceImprintAsync(@Nonnull final Path path) throws IOException {
 		final CompletableFuture<PathImprint> futureGeneratedImprint = generateImprintAsync(path);
-		//only schedule producing the imprint in the future if we have an imprint consumer
-		return findImprintConsumer().map(imprintConsumer -> futureGeneratedImprint.thenApply(imprint -> {
-			getProduceExecutor().execute(() -> imprintConsumer.accept(imprint));
+		return findImprintConsumer().map(imprintConsumer -> futureGeneratedImprint.thenApply(imprint -> { //only produce if there is a consumer
+			if(foundProduceErrorReference.get().isEmpty()) { //skip production if there is any error in effect
+				runAsync(() -> imprintConsumer.accept(imprint), getProduceExecutor()).exceptionally(throwable -> {
+					foundProduceErrorReference.compareAndSet(Optional.empty(), Optional.of(throwable)); //keep track of the first error that occurs
+					return null;
+				});
+			}
 			return imprint;
 		})).orElse(futureGeneratedImprint); //otherwise the future generated imprint is all we need
 	}
@@ -261,27 +278,31 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * Asynchronously generates an imprint of a single path, which must be a regular file or a directory. Any descendant imprints will be produced, but the path
 	 * itself will not be produced.
 	 * @apiNote This method involves asynchronous recursion to all the descendants of the directory.
+	 * @implSpec This implementation assumes the path exists, and will throw a {@link FileNotFoundException} if it does not.
 	 * @param path The path for which an imprint should be generated.
 	 * @return A future imprint of the path.
 	 * @throws IOException if there is a problem accessing the file system.
 	 */
 	public CompletableFuture<PathImprint> generateImprintAsync(@Nonnull final Path path) throws IOException {
 		getLogger().trace("Generating imprint for path `{}`.", path);
-		//TODO handle file not exist
 		findListener().ifPresent(listener -> listener.onGenerateImprint(path));
-		final FileTime contentModifiedAt = getLastModifiedTime(path);
-		//TODO  final CompletableFuture<FileTime> futureContentModifiedAt = CompletableFuture.supplyAsync(throwingSupplier(()->getLastModifiedTime(path)));
-		if(isRegularFile(path)) {
-			final CompletableFuture<Hash> futureContentFingerprint = generateFileContentFingerprintAsync(path);
-			return futureContentFingerprint
-					.thenApply(throwingFunction(contentFingerprint -> PathImprint.forFile(path, contentModifiedAt, contentFingerprint, FINGERPRINT_ALGORITHM)));
-		} else if(isDirectory(path)) {
-			final CompletableFuture<DirectoryContentChildrenFingerprints> futureContentChildrenFingerprints = generateDirectoryContentChildrenFingerprintsAsync(path);
-			return futureContentChildrenFingerprints.thenApply(throwingFunction(contentChildrenFingerprints -> PathImprint.forDirectory(path, contentModifiedAt,
-					contentChildrenFingerprints.contentFingerprint(), contentChildrenFingerprints.childrenFingerprint(), FINGERPRINT_ALGORITHM)));
-		} else {
-			throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
-		}
+		//Checking the modification timestamp asynchronously could cause extra overhead, but it then checks the path type
+		//in the same thread and most importantly allows all the I/O to be asynchronous.
+		final CompletableFuture<FileTime> futureContentModifiedAt = supplyAsync(throwingSupplier(() -> getLastModifiedTime(path)), getGenerateExecutor());
+		return futureContentModifiedAt.thenCompose(throwingFunction(contentModifiedAt -> {
+			if(isRegularFile(path)) {
+				final CompletableFuture<Hash> futureContentFingerprint = generateFileContentFingerprintAsync(path);
+				return futureContentFingerprint
+						.thenApply(throwingFunction(contentFingerprint -> PathImprint.forFile(path, contentModifiedAt, contentFingerprint, FINGERPRINT_ALGORITHM)));
+			} else if(isDirectory(path)) {
+				final CompletableFuture<DirectoryContentChildrenFingerprints> futureContentChildrenFingerprints = generateDirectoryContentChildrenFingerprintsAsync(
+						path);
+				return futureContentChildrenFingerprints.thenApply(throwingFunction(contentChildrenFingerprints -> PathImprint.forDirectory(path, contentModifiedAt,
+						contentChildrenFingerprints.contentFingerprint(), contentChildrenFingerprints.childrenFingerprint(), FINGERPRINT_ALGORITHM)));
+			} else {
+				throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
+			}
+		}));
 	}
 
 	/**
@@ -300,7 +321,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @throws IOException if there is a problem traversing the directory or reading file contents.
 	 */
 	CompletableFuture<Map<Path, CompletableFuture<PathImprint>>> produceChildImprintsAsync(@Nonnull final Path directory) throws IOException {
-		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
+		return supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.onEnterDirectory(directory));
 			try (final Stream<Path> childPaths = list(directory)) {
 				return childPaths.collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
@@ -318,7 +339,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @see Listener#afterGenerateFileContentFingerprint(Path)
 	 */
 	CompletableFuture<Hash> generateFileContentFingerprintAsync(@Nonnull final Path file) throws IOException {
-		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
+		return supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.beforeGenerateFileContentFingerprint(file));
 			final Hash fingerprint = FINGERPRINT_ALGORITHM.hash(file);
 			findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
@@ -343,7 +364,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 				.thenCompose(childImprintFuturesByPath -> {
 					final CompletableFuture<?>[] childImprintFutures = childImprintFuturesByPath.values().toArray(CompletableFuture[]::new);
 					//wait for all child futures to finish, and then hash their fingerprints in deterministic order
-					return CompletableFuture.allOf(childImprintFutures).thenApply(__ -> {
+					return allOf(childImprintFutures).thenApply(__ -> {
 						final MessageDigest contentFingerprintMessageDigest = FINGERPRINT_ALGORITHM.newMessageDigest();
 						final MessageDigest childrenFingerprintMessageDigest = FINGERPRINT_ALGORITHM.newMessageDigest();
 						//sort children to ensure deterministic hashing, but we only need to sort by filename as all children are in the same directory

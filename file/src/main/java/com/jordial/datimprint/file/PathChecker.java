@@ -23,6 +23,7 @@ import static java.nio.file.Files.*;
 import static java.nio.file.LinkOption.*;
 import static java.util.Collections.*;
 import static java.util.Objects.*;
+import static java.util.concurrent.CompletableFuture.*;
 import static java.util.concurrent.Executors.*;
 import static org.zalando.fauxpas.FauxPas.*;
 
@@ -31,6 +32,7 @@ import java.nio.file.*;
 import java.nio.file.attribute.FileTime;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import javax.annotation.*;
@@ -42,6 +44,8 @@ import io.clogr.Clogged;
  * Checks individual paths against their imprints to detect changes in content, filename case, and modification timestamp. The {@link #close()} method must be
  * called after the checker is finished being used to ensure that path checking and and production of results is complete and resources are cleaned up.
  * @implSpec By default symbolic links are followed.
+ * @implSpec Any check error will be propagated to the caller via {@link CompletableFuture}. Any production error will cause production to cease, but it will
+ *           only be reported when it is eventually thrown during {@link #close()}.
  * @author Garret Wilson
  * @see PathImprintGenerator#FINGERPRINT_ALGORITHM
  */
@@ -121,7 +125,8 @@ public class PathChecker implements Closeable, Clogged {
 
 	/**
 	 * {@inheritDoc}
-	 * @implSpec This implementation shuts down the executor if it is an instance of {@link ExecutorService}.
+	 * @implSpec This implementation shuts down the executor if it is an instance of {@link ExecutorService}. If there was any error that occurred during
+	 *           production, it will be thrown after the executors are shut down.
 	 * @throws IOException If the executor service could not be shut down.
 	 * @see #getCheckExecutor()
 	 * @see #getProduceExecutor()
@@ -165,7 +170,13 @@ public class PathChecker implements Closeable, Clogged {
 		} catch(final InterruptedException interruptedException) {
 			Thread.currentThread().interrupt();
 		}
+		foundProduceErrorReference.get().ifPresent(throwingConsumer(throwable -> { //propagate any production error
+			throw throwable instanceof IOException ? (IOException)throwable : new IOException("Production error.", throwable);
+		}));
 	}
+
+	/** Record of any error encountered while producing. A present value suspends production and causes the exception to be thrown during {@link #close()}. */
+	private final AtomicReference<Optional<Throwable>> foundProduceErrorReference = new AtomicReference<>(Optional.empty());
 
 	/**
 	 * Asynchronously checks a single path, which must be a regular file or a directory, against an imprint.
@@ -177,7 +188,7 @@ public class PathChecker implements Closeable, Clogged {
 	public CompletableFuture<Result> checkPathAsync(@Nonnull final Path path, @Nonnull final PathImprint imprint) throws IOException {
 		getLogger().trace("Checking path `{}` against imprint {}.", path, imprint);
 		findListener().ifPresent(listener -> listener.onCheckPath(path, imprint));
-		return CompletableFuture.supplyAsync(throwingSupplier(() -> {
+		final CompletableFuture<Result> futureResult = supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.beforeCheckPath(path));
 			final Result result;
 			if(isRegularFile(path)) {
@@ -190,9 +201,17 @@ public class PathChecker implements Closeable, Clogged {
 				throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
 			}
 			findListener().ifPresent(listener -> listener.afterCheckPath(path));
-			findResultConsumer().ifPresent(resultConsumer -> getProduceExecutor().execute(() -> resultConsumer.accept(result)));
 			return result;
 		}), getCheckExecutor());
+		return findResultConsumer().map(resultConsumer -> futureResult.thenApply(result -> { //only produce if there is a consumer
+			if(foundProduceErrorReference.get().isEmpty()) { //skip production if there is any error in effect
+				runAsync(() -> resultConsumer.accept(result), getProduceExecutor()).exceptionally(throwable -> {
+					foundProduceErrorReference.compareAndSet(Optional.empty(), Optional.of(throwable)); //keep track of the first error that occurs
+					return null;
+				});
+			}
+			return result;
+		})).orElse(futureResult); //otherwise the future result is all we need
 	}
 
 	/**
