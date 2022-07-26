@@ -30,7 +30,7 @@ import java.nio.file.*;
 import java.time.Duration;
 import java.util.function.Consumer;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.*;
 
 import javax.annotation.*;
 
@@ -112,8 +112,7 @@ public class DatimprintCli extends BaseCliApplication {
 					try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
 						for(final Path dataPath : argDataPaths) {
 							datimSerializer.appendBasePath(writer, dataPath);
-							imprintGenerator.produceImprint(dataPath);
-							//TODO check for error
+							imprintGenerator.produceImprint(dataPath); //any errors encountered will be propagated in this synchronous call
 							//At this point the entire tree has been traversed. There may still be imprints being produced (i.e written),
 							//but starting generating and producing imprints for another tree will cause no problem—those imprints will just be added to the queue.
 						}
@@ -199,6 +198,7 @@ public class DatimprintCli extends BaseCliApplication {
 
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(argDataPath, argImprintFile)).reset());
 		final Duration timeElapsed;
+		final AtomicReference<Optional<Throwable>> foundErrorReference = new AtomicReference<>(Optional.empty());
 		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile)); final CheckCliStatus statusPrinter = new CheckCliStatus()) {
 			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder().withResultConsumer(statusPrinter);
 			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
@@ -214,9 +214,16 @@ public class DatimprintCli extends BaseCliApplication {
 						final Path oldBasePath = parser.findCurrentBasePath()
 								.orElseThrow(() -> new IOException("Cannot relocate imprint path `%s`; base path not known.".formatted(imprintPath)));
 						final Path path = changeBase(imprintPath, oldBasePath, argDataPath);
-						pathChecker.checkPathAsync(path, imprint);
+						pathChecker.checkPathAsync(path, imprint).exceptionally(throwable -> {
+							foundErrorReference.compareAndSet(Optional.empty(), Optional.of(throwable)); //keep track of the first error that occurs
+							return null;
+						});
 					}));
-				} while(foundImprint.isPresent());
+				} while(foundImprint.isPresent() && foundErrorReference.get().isEmpty());
+
+				foundErrorReference.get().ifPresent(throwingConsumer(throwable -> { //propagate and let the application handle any error
+					throw throwable;
+				}));
 			}
 			timeElapsed = statusPrinter.getElapsedTime();
 		}
@@ -254,7 +261,7 @@ public class DatimprintCli extends BaseCliApplication {
 
 		@Override
 		public void afterCheckPath(final Path path) {
-			removeWork(path); //TODO find out why work doesn't seem to be removed as quickly as with generation, and some work not showing on the status as being removed at all
+			removeWork(path);
 		}
 
 		@Override

@@ -319,13 +319,17 @@ public class PathChecker implements Closeable, Clogged {
 		}
 
 		/**
-		 * Adds mismatches to those currently known mismatches.
+		 * Adds mismatches to those currently known mismatches. If no mismatches are provided, no changes are made.
 		 * @apiNote This method is primarily for subclasses to add additional mismatches after base class construction.
 		 * @param moreMismatches The additional mismatches to add.
 		 */
 		protected void addMismatches(@Nonnull final Set<Mismatch> moreMismatches) {
-			final EnumSet<Mismatch> mismatches = EnumSet.copyOf(this.mismatches);
-			mismatches.addAll(moreMismatches);
+			if(moreMismatches.isEmpty()) { //if no mismatches are being added, there is nothing to do
+				return;
+			}
+			//start with a copy of the additional mismatches, which we now know not to be empty, to avoid an IllegalArgumentException for EnumSet.copyOf()
+			final EnumSet<Mismatch> mismatches = EnumSet.copyOf(moreMismatches);
+			mismatches.addAll(this.mismatches);
 			this.mismatches = unmodifiableSet(mismatches);
 		}
 
