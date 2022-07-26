@@ -272,12 +272,13 @@ public class DatimprintCli extends BaseCliApplication {
 						: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
 				notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
 				//create the entire report string rather than printing each asynchronously to prevent the lines becoming separated
-				final StringBuilder reportBuilder = new StringBuilder(notificationText);
+				final List<String> report = new ArrayList<>();
+				report.add(notificationText);
 				//add report detail lines for paths that exist
 				if(result instanceof PathChecker.ExistingPathResult existingPathResult) {
 					existingPathResult.getMismatches().stream().sorted(comparingInt(PathChecker.Result.Mismatch::ordinal)) //sort by ordinal to show most severe problems first
-							.forEach(mismatch -> {
-								final String detailText = switch(mismatch) {
+							.map(mismatch -> {
+								return "  * " + switch(mismatch) {
 									//TODO it would be best not to assume the result type just because there was a content fingerprint mismatch
 									case CONTENT_FINGERPRINT -> "Path content fingerprint `%s` did not match `%s` of the imprint."
 											.formatted(((PathChecker.FileResult)result).getContentFingerprint(), existingPathResult.getImprint().contentFingerprint());
@@ -286,10 +287,9 @@ public class DatimprintCli extends BaseCliApplication {
 									case FILENAME -> "Path filename `%s` did not match `%s` of the imprint.".formatted(existingPathResult.getPath().getFileName(),
 											existingPathResult.getImprint().path().getFileName());
 								};
-								reportBuilder.append(System.lineSeparator()).append("  * ").append(detailText); //* ...
-							});
+							}).forEachOrdered(report::add);
 				}
-				printLineAsync(reportBuilder); //print a report in addition to the status notification TODO add option to send to System.out or save in a file
+				printLinesAsync(report); //print a report in addition to the status notification TODO add option to send to System.out or save in a file
 			}
 		}
 
