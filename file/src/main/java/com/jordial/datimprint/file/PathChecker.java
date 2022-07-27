@@ -16,7 +16,6 @@
 
 package com.jordial.datimprint.file;
 
-import static com.globalmentor.io.Paths.*;
 import static com.globalmentor.java.Conditions.*;
 import static com.jordial.datimprint.file.PathImprintGenerator.FINGERPRINT_ALGORITHM;
 import static java.nio.file.Files.*;
@@ -361,8 +360,8 @@ public class PathChecker implements Closeable, Clogged {
 		protected ExistingPathResult(@Nonnull final Path path, @Nonnull final PathImprint imprint) throws IOException {
 			super(path.toRealPath(NOFOLLOW_LINKS), imprint);
 			final EnumSet<Mismatch> moreMismatches = EnumSet.noneOf(Mismatch.class);
-			//check the filename against the path saved in the base class, which has been converted to the real path (i.e. true case)
-			if(!findFilename(getPath()).equals(findFilename(imprint.path()))) {
+			//check the filename (or none) against that of the path saved in the base class, which has been converted to the real path (i.e. true case)
+			if(!Objects.equals(getPath().getFileName(), imprint.path().getFileName())) {
 				moreMismatches.add(Mismatch.FILENAME);
 			}
 			this.contentModifiedAt = getLastModifiedTime(path);
