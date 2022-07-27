@@ -219,8 +219,8 @@ public class DatimprintCli extends BaseCliApplication {
 												.formatted(((PathChecker.FileResult)result).getContentFingerprint(), existingPathResult.getImprint().contentFingerprint());
 										case CONTENT_MODIFIED_AT -> "Path modification timestamp %s did not match %s of the imprint."
 												.formatted(existingPathResult.getContentModifiedAt(), existingPathResult.getImprint().contentModifiedAt());
-										case FILENAME -> "Path filename `%s` did not match `%s` of the imprint.".formatted(existingPathResult.getPath().getFileName(),
-												existingPathResult.getImprint().path().getFileName());
+										case FILENAME -> "Path filename `%s` did not match `%s` of the imprint.".formatted(findFilename(existingPathResult.getPath()).orElse(""),
+												findFilename(existingPathResult.getImprint().path()).orElse(""));
 									};
 								}).forEachOrdered(report::add);
 					}

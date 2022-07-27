@@ -16,6 +16,8 @@
 
 package com.jordial.datimprint.file;
 
+import static com.globalmentor.io.Paths.*;
+import static com.globalmentor.java.Conditions.*;
 import static com.globalmentor.java.Longs.*;
 import static java.nio.file.LinkOption.*;
 import static java.util.Objects.*;
@@ -24,10 +26,10 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
+import java.util.Optional;
 
 import javax.annotation.*;
 
-import com.globalmentor.io.Paths;
 import com.globalmentor.security.*;
 
 /**
@@ -36,7 +38,7 @@ import com.globalmentor.security.*;
  * An imprint of a single path has three major parts:
  * </p>
  * <ul>
- * <li>Name (the string form of the {@link Path#getFileName()})</li>
+ * <li>Name (the string form of the {@link Path#getFileName()}, which may not be present for some directories)</li>
  * <li>Attributes (primarily last-modified timestamp)</li>
  * <li>Content</li>
  * </ul>
@@ -85,7 +87,7 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime contentModifiedA
 	}
 
 	/**
-	 * Generates an imprint of a single path given the modification timestamp and pre-generated hash of the path contents.
+	 * Generates an imprint of a single file given the modification timestamp and pre-generated hash of the file contents.
 	 * @implSpec The overall fingerprint is generated using
 	 *           {@link #generateFingerprint(Path, FileTime, Hash, Hash, com.globalmentor.security.MessageDigests.Algorithm)}.
 	 * @param file The path of the file for which an imprint should be generated; converted to the real path of the file system without following links, to ensure
@@ -94,13 +96,14 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime contentModifiedA
 	 * @param contentFingerprint The fingerprint of the contents of the file.
 	 * @param fingerprintAlgorithm The algorithm for calculating fingerprints.
 	 * @return An imprint for the file.
-	 * @throws IllegalArgumentException if the path has no filename.
+	 * @throws IllegalArgumentException if the file has no filename.
 	 * @throws IOException if there is an error determining the real path.
 	 * @see Path#getFileName()
 	 * @see Path#toRealPath(LinkOption...)
 	 */
 	public static PathImprint forFile(@Nonnull final Path file, @Nonnull final FileTime contentModifiedAt, @Nonnull final Hash contentFingerprint,
 			@Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) throws IOException {
+		checkArgument(file.getFileName() != null, "File `%s` has no filename.", file);
 		return new PathImprint(file.toRealPath(NOFOLLOW_LINKS), contentModifiedAt, contentFingerprint,
 				generateFingerprint(file, contentModifiedAt, contentFingerprint, null, fingerprintAlgorithm));
 	}
@@ -117,9 +120,7 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime contentModifiedA
 	 *          children fingerprint.
 	 * @param fingerprintAlgorithm The algorithm for calculating fingerprints.
 	 * @return An imprint for the directory.
-	 * @throws IllegalArgumentException if the path has no filename.
 	 * @throws IOException if there is an error determining the real path.
-	 * @see Path#getFileName()
 	 * @see Path#toRealPath(LinkOption...)
 	 */
 	public static PathImprint forDirectory(@Nonnull final Path directory, @Nonnull final FileTime contentModifiedAt, @Nonnull final Hash contentFingerprint,
@@ -138,15 +139,13 @@ public record PathImprint(@Nonnull Path path, @Nonnull FileTime contentModifiedA
 	 *          file). Note that am empty directory is still expected to have a children fingerprint.
 	 * @param fingerprintAlgorithm The algorithm for calculating fingerprints.
 	 * @return A fingerprint of all the components.
-	 * @throws IllegalArgumentException if the path has no filename.
 	 * @see Path#getFileName()
 	 */
 	public static Hash generateFingerprint(@Nonnull final Path path, @Nonnull final FileTime contentModifiedAt, @Nonnull final Hash contentFingerprint,
 			@Nullable final Hash childrenFingerprint, @Nonnull final MessageDigests.Algorithm fingerprintAlgorithm) {
-		final Hash filenameFingerprint = fingerprintAlgorithm
-				.hash(Paths.findFilename(path).orElseThrow(() -> new IllegalArgumentException("Path `%s` has no filename.".formatted(path))));
 		final MessageDigest fingerprintMessageDigest = fingerprintAlgorithm.newMessageDigest();
-		filenameFingerprint.updateMessageDigest(fingerprintMessageDigest);
+		final Optional<Hash> foundFilenameFingerprint = findFilename(path).map(fingerprintAlgorithm::hash);
+		foundFilenameFingerprint.ifPresent(filenameFingerprint -> filenameFingerprint.updateMessageDigest(fingerprintMessageDigest));
 		fingerprintMessageDigest.update(toBytes(contentModifiedAt.toMillis()));
 		contentFingerprint.updateMessageDigest(fingerprintMessageDigest);
 		if(childrenFingerprint != null) {

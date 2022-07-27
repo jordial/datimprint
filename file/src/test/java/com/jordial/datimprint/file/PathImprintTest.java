@@ -19,6 +19,7 @@ package com.jordial.datimprint.file;
 import static com.jordial.datimprint.file.PathImprintGenerator.FINGERPRINT_ALGORITHM;
 import static org.hamcrest.MatcherAssert.*;
 import static org.hamcrest.Matchers.*;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 import java.io.IOException;
@@ -58,7 +59,74 @@ public class PathImprintTest {
 
 	/** @see PathImprint#forFile(Path, FileTime, Hash, com.globalmentor.security.MessageDigests.Algorithm) */
 	@Test
-	void testForDirectory() throws IOException {
+	void verifyForFileWithNoFilenameThrowsIllegalArgumentException() throws IOException {
+		final Path mockFilePath = mock(Path.class);
+		when(mockFilePath.toRealPath(any())).thenReturn(mockFilePath);
+		final FileTime contentModifiedAt = FileTime.from(Instant.ofEpochSecond(1653252496, 751214600));
+		final Hash contentFingerprint = FINGERPRINT_ALGORITHM.hash("foobar");
+
+		assertThrows(IllegalArgumentException.class, () -> PathImprint.forFile(mockFilePath, contentModifiedAt, contentFingerprint, FINGERPRINT_ALGORITHM));
+	}
+
+	/** @see PathImprint#forDirectory(Path, FileTime, Hash, Hash, com.globalmentor.security.MessageDigests.Algorithm) */
+	@Test
+	void testForEmptyDirectory() throws IOException {
+		final Path mockDirectoryPath = mock(Path.class);
+		when(mockDirectoryPath.toRealPath(any())).thenReturn(mockDirectoryPath);
+		final Path mockDirectoryFileNamePath = mock(Path.class);
+		final String directoryfilename = "foobar";
+		when(mockDirectoryFileNamePath.toString()).thenReturn(directoryfilename);
+		when(mockDirectoryPath.getFileName()).thenReturn(mockDirectoryFileNamePath);
+		final FileTime directoryContentModifiedAt = FileTime.from(Instant.ofEpochSecond(1653252496, 751214600));
+
+		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.emptyHash();
+		final Hash directoryChildrenFingerprint = FINGERPRINT_ALGORITHM.emptyHash();
+
+		final PathImprint imprint = PathImprint.forDirectory(mockDirectoryPath, directoryContentModifiedAt, directoryContentFingerprint,
+				directoryChildrenFingerprint, FINGERPRINT_ALGORITHM);
+		assertThat(imprint.path(), is(mockDirectoryPath));
+		assertThat(imprint.contentModifiedAt(), is(directoryContentModifiedAt));
+		assertThat(imprint.contentFingerprint(), is(directoryContentFingerprint));
+		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(mockDirectoryPath, directoryContentModifiedAt, directoryContentFingerprint,
+				directoryChildrenFingerprint, FINGERPRINT_ALGORITHM)));
+		assertThat(imprint.miniprintChecksum(), is(imprint.fingerprint().toChecksum().substring(0, PathImprint.MINIPRINT_CHECKSUM_LENGTH)));
+	}
+
+	/**
+	 * Tests generating an imprint for a directory with no filename.
+	 * @apiNote This simulates volume paths e.g. <code>A:\</code> on Windows.
+	 * @see PathImprint#forDirectory(Path, FileTime, Hash, Hash, com.globalmentor.security.MessageDigests.Algorithm)
+	 */
+	@Test
+	void testForDirectoryWithNoFilename() throws IOException {
+		final Path mockDirectoryPath = mock(Path.class);
+		when(mockDirectoryPath.toRealPath(any())).thenReturn(mockDirectoryPath);
+		final FileTime directoryContentModifiedAt = FileTime.from(Instant.ofEpochSecond(1653252496, 751214600));
+
+		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.emptyHash();
+		final Hash directoryChildrenFingerprint = FINGERPRINT_ALGORITHM.emptyHash();
+
+		final PathImprint imprint = PathImprint.forDirectory(mockDirectoryPath, directoryContentModifiedAt, directoryContentFingerprint,
+				directoryChildrenFingerprint, FINGERPRINT_ALGORITHM);
+		assertThat(imprint.path(), is(mockDirectoryPath));
+		assertThat(imprint.contentModifiedAt(), is(directoryContentModifiedAt));
+		assertThat(imprint.contentFingerprint(), is(directoryContentFingerprint));
+		assertThat(imprint.fingerprint(), is(PathImprint.generateFingerprint(mockDirectoryPath, directoryContentModifiedAt, directoryContentFingerprint,
+				directoryChildrenFingerprint, FINGERPRINT_ALGORITHM)));
+		assertThat(imprint.miniprintChecksum(), is(imprint.fingerprint().toChecksum().substring(0, PathImprint.MINIPRINT_CHECKSUM_LENGTH)));
+	}
+
+	/**
+	 * Simulates a directory with children.
+	 * @implNote Actual calculation of fingerprints from child content and child fingerprints is technically unnecessary for a test. The test would work the same
+	 *           if predetermined fingerprints were used for these parameters, or if empty hashes were use as in {@link #testForEmptyDirectory()}. Similarly the
+	 *           order of the child processing has been normalized to alphabetical order as would occur in real life, even though it makes no difference here as
+	 *           only the fingerprint itself is considered. Calculating the values manually here helps illustrate how the values would be generated in real life.
+	 *           Furthermore it provides a pattern for the integration tests of the actual imprint generation.
+	 * @see PathImprint#forDirectory(Path, FileTime, Hash, Hash, com.globalmentor.security.MessageDigests.Algorithm)
+	 */
+	@Test
+	void testForDirectoryWithChildren() throws IOException {
 		final Path mockDirectoryPath = mock(Path.class);
 		when(mockDirectoryPath.toRealPath(any())).thenReturn(mockDirectoryPath);
 		final Path mockDirectoryFileNamePath = mock(Path.class);
@@ -89,13 +157,6 @@ public class PathImprintTest {
 		final Hash barContentFingerprint = FINGERPRINT_ALGORITHM.hash("bar");
 		final PathImprint barImprint = PathImprint.forFile(mockBarFilePath, barContentModifiedAt, barContentFingerprint, FINGERPRINT_ALGORITHM);
 
-		//Actual calculation of fingerprints from child content and child fingerprints is technically unnecessary for a test.
-		//The test would work the same if predetermined fingerprints were used for these parameters. Similarly the order of the child
-		//processing has been normalized to alphabetical order as would occur in real life, even though it makes not difference
-		//here as only the fingerprint itself is considered.
-		//
-		//Calculating the values manually here helps illustrate how the values would be generated in real life.
-		//Furthermore it provides a pattern for the integration tests of the actual imprint generation.
 		final Hash directoryContentFingerprint = FINGERPRINT_ALGORITHM.hash(barContentFingerprint, fooContentFingerprint);
 		final Hash directoryChildrenFingerprint = FINGERPRINT_ALGORITHM.hash(barImprint.fingerprint(), fooImprint.fingerprint());
 
