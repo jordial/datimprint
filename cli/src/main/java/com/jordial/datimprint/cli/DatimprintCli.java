@@ -16,11 +16,11 @@
 
 package com.jordial.datimprint.cli;
 
-import static com.globalmentor.collections.iterators.Iterators.*;
-import static com.globalmentor.java.Characters.*;
+import static com.globalmentor.io.Paths.*;
 import static java.nio.charset.StandardCharsets.*;
-import static java.util.Collections.*;
-import static java.util.concurrent.Executors.*;
+import static java.nio.file.Files.*;
+import static java.util.Comparator.*;
+import static java.util.stream.Collectors.*;
 import static org.fusesource.jansi.Ansi.*;
 import static org.zalando.fauxpas.FauxPas.*;
 
@@ -29,10 +29,8 @@ import java.nio.charset.*;
 import java.nio.file.*;
 import java.time.Duration;
 import java.util.function.Consumer;
-import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 import javax.annotation.*;
 
@@ -41,7 +39,6 @@ import org.slf4j.Logger;
 import org.slf4j.event.Level;
 
 import com.globalmentor.application.*;
-import com.globalmentor.java.*;
 import com.jordial.datimprint.file.*;
 
 import picocli.CommandLine.*;
@@ -71,19 +68,19 @@ public class DatimprintCli extends BaseCliApplication {
 
 	/**
 	 * Generates a data imprint of the indicated file or directory tree.
-	 * @param argDataPath The file or base directory of the data for which an imprint should be generated.
+	 * @param argDataPaths The files or base directories of the data for which an imprint should be generated.
 	 * @param argCharset The charset for text encoding.
 	 * @param argOutput The path to a file in which to store the output.
 	 * @param argExecutorType The particular type of executor to use, if any.
 	 * @throws IOException If an I/O error occurs.
 	 */
-	@Command(description = "Generates a data imprint of the indicated file or directory tree. The output will use the default console/system encoding and line separator unless an output file is specified.", mixinStandardHelpOptions = true)
+	@Command(description = "Generates a data imprint of the indicated file or directory tree. The output will use the default console/system encoding unless an output file is specified. The system line separator will be used.", mixinStandardHelpOptions = true)
 	public void generate(
-			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated.%nDefaults to the working directory.") @Nonnull Path argDataPath,
+			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated. Multiple data sources are allowed.", arity = "1..*") @Nonnull List<Path> argDataPaths,
 			@Option(names = {"--charset",
 					"-c"}, description = "The charset for text encoding.%nDefaults to UTF-8 if an output file is specified; otherwise uses the console system encoding unless redirected, in which case uses the default system encoding.") Optional<Charset> argCharset,
 			@Option(names = {"--output",
-					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. A single LF will be used as the line separator.") Optional<Path> argOutput,
+					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. The system line separator will be used.") Optional<Path> argOutput,
 			@Option(names = {
 					"--executor"}, description = "Specifies a particular executor to use for multithreading. Valid values: ${COMPLETION-CANDIDATES}") Optional<PathImprintGenerator.Builder.ExecutorType> argExecutorType)
 			throws IOException {
@@ -92,72 +89,52 @@ public class DatimprintCli extends BaseCliApplication {
 
 		logAppInfo();
 
-		final long startTimeNs = System.nanoTime();
-		final String lineSeparator = argOutput.map(__ -> LINE_FEED_CHAR).map(String::valueOf).orElseGet(OperatingSystem::getLineSeparator);
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Generating imprint for `%s` ...".formatted(argDataPath.toAbsolutePath())).reset());
-		final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
-		try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
-			final Writer writer = new BufferedWriter(new OutputStreamWriter(outputStream, charset));
-			try {
-				writeImprintHeader(writer, lineSeparator);
-				final AtomicLong counter = new AtomicLong(0);
-				final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> writeImprint(writer, imprint, counter.incrementAndGet(), lineSeparator));
-				try (final StatusPrinter statusPrinter = new StatusPrinter(startTimeNs)) {
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a(
+				"Generating imprint for %s ...".formatted(argDataPaths.stream().map(Path::toAbsolutePath).map(path -> "`%s`".formatted(path)).collect(joining(", "))))
+				.reset());
+		final Duration timeElapsed;
+		try (final GenerateStatus status = new GenerateStatus()) {
+			final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
+			try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
+				final Datim.Serializer datimSerializer = new Datim.Serializer();
+				final Writer writer = new BufferedWriter(new OutputStreamWriter(outputStream, charset));
+				try {
+					datimSerializer.appendHeader(writer);
+					final AtomicLong counter = new AtomicLong(0);
+					final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> datimSerializer.appendImprint(writer, imprint, counter.incrementAndGet()));
 					final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer);
 					if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
-						imprintGeneratorBuilder.withListener(statusPrinter);
+						imprintGeneratorBuilder.withListener(status);
 					}
 					argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
 					try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
-						imprintGenerator.produceImprint(argDataPath);
+						for(final Path dataPath : argDataPaths) {
+							datimSerializer.appendBasePath(writer, dataPath);
+							imprintGenerator.produceImprint(dataPath); //any errors encountered will be propagated in this synchronous call
+							//At this point the entire tree has been traversed. There may still be imprints being produced (i.e written),
+							//but starting generating and producing imprints for another tree will cause no problem—those imprints will just be added to the queue.
+						}
+					}
+				} finally {
+					if(outputStream == System.out) { //don't close the writer if we are writing to stdout
+						writer.flush();
+					} else {
+						writer.close();
 					}
 				}
 			} finally {
-				if(outputStream == System.out) { //don't close the writer if we are writing to stdout
-					writer.flush();
-				} else {
-					writer.close();
+				//If we are writing to stdout, we didn't close the writer, so flush the output stream (even though it
+				//should have been flushed anyway; see https://stackoverflow.com/a/7166357). 
+				if(outputStream == System.out) {
+					outputStream.flush();
 				}
 			}
-		} finally {
-			//If we are writing to stdout, we didn't close the writer, so flush the output stream (even though it
-			//should have been flushed anyway; see https://stackoverflow.com/a/7166357). 
-			if(outputStream == System.out) {
-				outputStream.flush();
-			}
+			timeElapsed = status.getElapsedTime();
 		}
-		final Duration elapsed = Duration.ofNanos(System.nanoTime() - startTimeNs);
-
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
-				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(elapsed.toHours(), elapsed.toMinutesPart(), elapsed.toSecondsPart())).reset());
-	}
-
-	/**
-	 * Prints the header of an imprint output.
-	 * @param writer The writer for writing the imprint header.
-	 * @param lineSeparator The end-of-line character.
-	 * @throws IOException if an I/O error occurs writing the data.
-	 */
-	protected void writeImprintHeader(@Nonnull final Writer writer, @Nonnull final String lineSeparator) throws IOException {
-		writer.write("#\tMiniprint\tPath\tModified At\tContent Fingerprint\tComplete Fingerprint%s".formatted(lineSeparator));
-		//TODO add "Levels" column with e.g. `+++` designation for number of levels below root
-	}
-
-	/**
-	 * Prints the header of an imprint output. The counter will be incremented before printing.
-	 * @param writer The writer for writing the imprint.
-	 * @param imprint The imprint to print.
-	 * @param number The number of the line being written.
-	 * @param lineSeparator The end-of-line character.
-	 * @throws IOException if an I/O error occurs writing the data.
-	 */
-	protected void writeImprint(@Nonnull final Writer writer, @Nonnull final PathImprint imprint, @Nonnull final long number, @Nonnull final String lineSeparator)
-			throws IOException {
-		//TODO ensure no tab in path
-		writer.write("%s\t%s\t%s\t%s\t%s\t%s%s".formatted(Long.toUnsignedString(number), imprint.fingerprint().toChecksum().substring(0, 8), imprint.path(),
-				imprint.modifiedAt(), imprint.contentFingerprint().toChecksum(), imprint.fingerprint().toChecksum(), lineSeparator));
+				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(timeElapsed.toHours(), timeElapsed.toMinutesPart(), timeElapsed.toSecondsPart())).reset());
 	}
 
 	/**
@@ -166,154 +143,152 @@ public class DatimprintCli extends BaseCliApplication {
 	 * <p>
 	 * If {@link DatimprintCli#isVerbose()} is enabled, directories will be printed as they are entered.
 	 * </p>
-	 * <p>
-	 * The generated imprint count (which may include imprints that are still in the process of being generated) and information about the current file hash being
-	 * generated are printed.
-	 * </p>
-	 * <p>
-	 * This status printer must be closed after it is no longer in use.
-	 * </p>
-	 * @implNote The printed count is based upon the traversal/generation status, and is independent of the line numbers placed in the file.
-	 * @implNote This implementation uses a separate, single-threaded executor for printing to reduce contention with generation and prevent race conditions in
-	 *           status consistency.
+	 * @implNote The status count is based upon the traversal/generation status, and is independent of the line numbers placed in the file.
 	 * @author Garret Wilson
 	 */
-	private class StatusPrinter implements PathImprintGeneratorListener, Closeable {
+	private class GenerateStatus extends CliStatus<Path> implements PathImprintGenerator.Listener {
 
-		private final ExecutorService printExecutorService = newSingleThreadExecutor();
-
-		/** The count of generated imprints. */
-		private final AtomicLong counter = new AtomicLong(0);
-
-		private final long startTimeNs;
-
-		/**
-		 * Start time constructor.
-		 * @param startTimeNs The time the process started in nanoseconds.
-		 */
-		public StatusPrinter(final long startTimeNs) {
-			this.startTimeNs = startTimeNs;
+		public GenerateStatus() {
+			super(System.err);
 		}
 
-		/**
-		 * The file content fingerprints currently being generated. This is not expected to grow very large, as the number is limited to large extent by the number
-		 * of threads used in the thread pool.
-		 */
-		private final Set<Path> fileContentFingerprintsGenerating = newSetFromMap(new ConcurrentHashMap<>());
-
-		private Optional<Path> optionalStatusFile = Optional.empty();
-
-		/**
-		 * Finds a file marked as the "current" one generating a hash the purpose of status display. This is the file to display in the status, even though there
-		 * might be several files actually having their file contents generated.
-		 * @implSpec This method updates the record of the current file dynamically, based upon whether the file is actually still being hashed or not. If it is
-		 *           not, or if there is no record of the current file to use, another file is determined by choosing any from the set of currently generating
-		 *           fingerprint files.
-		 * @return The file marked has currently having its content fingerprint generated for status purposes, if any.
-		 */
-		protected synchronized Optional<Path> findStatusFile() {
-			Optional<Path> foundStatusFile = optionalStatusFile;
-			//if no file has been chosen, or it is no longer actually being hashed
-			if(!optionalStatusFile.map(fileContentFingerprintsGenerating::contains).orElse(false)) {
-				foundStatusFile = findNext(fileContentFingerprintsGenerating.iterator()); //chose an arbitrary file for the status
-				optionalStatusFile = foundStatusFile; //update the record of the status file for next time
-			}
-			return foundStatusFile;
+		@Override
+		public void onGenerateImprint(final Path path) {
+			incrementCount();
 		}
 
-		/** Keeps track of the last status string to prevent unnecessary re-printing and to determine padding. */
-		@Nullable
-		private String lastStatus = null;
-
-		/**
-		 * Prints the given directory and then prints the status.
-		 * @implSpec The record of the last status will be cleared.
-		 * @param directory The directory to print.
-		 */
-		protected synchronized void printDirectory(@Nonnull final Path directory) {
-			final int padWidth = lastStatus != null ? lastStatus.length() : 1; //pad at least to a nonzero value to avoid a MissingFormatWidthException
-			System.err.println(("\r%-" + padWidth + "s").formatted(directory.toAbsolutePath()));
-			lastStatus = null; //we're skipping to another line for further status
-		}
-
-		/**
-		 * Prints the current status, including the elapsed time, count, and current status file.
-		 * @see #findStatusFile()
-		 */
-		protected synchronized void printStatus() {
-			final Duration elapsed = Duration.ofNanos(System.nanoTime() - startTimeNs);
-			final String status = "%d:%02d:%02d | %d | %s".formatted(elapsed.toHours(), elapsed.toMinutesPart(), elapsed.toSecondsPart(), counter.get(),
-					findStatusFile().map(Path::toString).orElse(""));
-			if(!status.equals(lastStatus)) { //if the status is different than the last time (or there was no previous status)
-				//We only have to pad to the last actual status, _not_ to the _padded_ last status, because
-				//if the last status was printed padded, it would have erased the previous status already.
-				//In other words, padding only needs to be added once to overwrite each previous status.
-				final int padWidth = lastStatus != null ? lastStatus.length() : 1; //pad at least to a nonzero value to avoid a MissingFormatWidthException
-				System.err.print(("\r%-" + padWidth + "s").formatted(status));
-				lastStatus = status; //update the last status for checking the next time
-			}
-		}
-
-		/** Clears the current status by blanking out the status and returning the cursor to the beginning of the line. */
-		protected synchronized void clearStatus() {
-			final int padWidth = lastStatus != null ? lastStatus.length() : 1; //pad at least to a nonzero value to avoid a MissingFormatWidthException
-			System.err.print(("\r%-" + padWidth + "s\r").formatted(""));
-			lastStatus = null;
-		}
-
-		/**
-		 * {@inheritDoc}
-		 * @implSpec This implementation writes the directory {@link System#err} if {@link DatimprintCli#isVerbose()} is enabled.
-		 * @implNote This implementation relies on {@link PrintStream} already being synchronized for thread safety.
-		 */
 		@Override
 		public void onEnterDirectory(final Path directory) {
 			if(isVerbose()) {
-				printExecutorService.execute(() -> {
-					printDirectory(directory);
-					printStatus();
-				});
+				printLineAsync(directory.toString());
 			}
 		}
 
 		@Override
 		public void beforeGenerateFileContentFingerprint(final Path file) {
-			fileContentFingerprintsGenerating.add(file);
-			printExecutorService.execute(this::printStatus);
+			addWork(file);
 		}
 
 		@Override
 		public void afterGenerateFileContentFingerprint(final Path file) {
-			fileContentFingerprintsGenerating.remove(file);
-			printExecutorService.execute(this::printStatus);
+			removeWork(file);
 		}
 
-		@Override
-		public void onGenerateImprint(final Path path) {
-			counter.incrementAndGet();
-			printExecutorService.execute(this::printStatus);
-		}
+	}
 
-		/**
-		 * {@inheritDoc}
-		 * @implSpec This implementation clears the status and then shuts down the executor used for printing the status.
-		 * @throws IOException If the status print executor could not be shut down.
-		 */
-		@Override
-		public void close() throws IOException {
-			printExecutorService.execute(this::clearStatus);
-			printExecutorService.shutdown();
-			try {
-				if(!printExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
-					printExecutorService.shutdownNow();
-					if(!printExecutorService.awaitTermination(3, TimeUnit.SECONDS)) {
-						throw new IOException("Status printing service not shut down properly.");
+	/**
+	 * Checks the indicated file or files in the indicated directory tree against the data imprints in a file. The imprints will be checked even if they are for
+	 * different paths, as long as their relative paths (against the stored base paths) match those in the subtree. Any paths not in the imprints file (e.g. new
+	 * files in the data directory) will not be checked.
+	 * @param argDataPath The file or base directory of the file(s) to be checked.
+	 * @param argImprintFile The file containing imprints against which to check the data files.
+	 * @throws IOException If an I/O error occurs.
+	 */
+	@Command(description = "Checks the indicated file or files in the indicated directory tree against the data imprints in a file.", mixinStandardHelpOptions = true)
+	public void check(
+			@Parameters(paramLabel = "<data>", description = "The file or base directory of the file(s) to be checked.", arity = "1..*") @Nonnull Path argDataPath,
+			@Option(names = {"--imprint",
+					"-i"}, description = "The file containing imprints against which to check the data files.", required = true) Path argImprintFile)
+			//TODO @Option(names = {"--imprint-charset"}, description = "The charset of the imprints file. If not provided, detected from the any BOM, defaulting to UTF-8.") Optional<Charset> argImprintCharset)
+			throws IOException {
+
+		final Logger logger = getLogger();
+
+		logAppInfo();
+
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(argDataPath, argImprintFile)).reset());
+		final Duration timeElapsed;
+		final AtomicReference<Optional<Throwable>> foundErrorReference = new AtomicReference<>(Optional.empty());
+		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile)); final CheckStatus status = new CheckStatus()) {
+			final Consumer<PathChecker.Result> resultConsumer = throwingConsumer(result -> {
+				if(!result.isMatch()) {
+					final String notificationText = result instanceof PathChecker.MissingPathResult
+							? "No path `%s` matching imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path())
+							: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
+					status.notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
+					//create the entire report string rather than printing each asynchronously to prevent the lines becoming separated
+					final List<String> report = new ArrayList<>();
+					report.add("- " + notificationText); //`- error` 
+					//add report detail lines for paths that exist
+					if(result instanceof PathChecker.ExistingPathResult existingPathResult) {
+						existingPathResult.getMismatches().stream().sorted(comparingInt(PathChecker.Result.Mismatch::ordinal)) //sort by ordinal to show most severe problems first
+								.map(mismatch -> {
+									return "  * " + switch(mismatch) { //`  * detail`
+										//TODO it would be best not to assume the result type just because there was a content fingerprint mismatch
+										case CONTENT_FINGERPRINT -> "Path content fingerprint `%s` did not match `%s` of the imprint."
+												.formatted(((PathChecker.FileResult)result).getContentFingerprint(), existingPathResult.getImprint().contentFingerprint());
+										case CONTENT_MODIFIED_AT -> "Path modification timestamp %s did not match %s of the imprint."
+												.formatted(existingPathResult.getContentModifiedAt(), existingPathResult.getImprint().contentModifiedAt());
+										case FILENAME -> "Path filename `%s` did not match `%s` of the imprint.".formatted(existingPathResult.getPath().getFileName(),
+												existingPathResult.getImprint().path().getFileName());
+									};
+								}).forEachOrdered(report::add);
 					}
+					status.printLinesAsync(report); //print a report in addition to the status notification TODO add option to send to System.out or save in a file
 				}
-			} catch(final InterruptedException interruptedException) {
-				printExecutorService.shutdownNow();
-				Thread.currentThread().interrupt();
+			});
+			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder().withResultConsumer(resultConsumer);
+			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
+				pathCheckerBuilder.withListener(status);
 			}
+			try (final PathChecker pathChecker = pathCheckerBuilder.build()) {
+				final Datim.Parser parser = new Datim.Parser(inputStream);
+				Optional<PathImprint> foundImprint;
+				do {
+					foundImprint = parser.readImprint();
+					foundImprint.ifPresent(throwingConsumer(imprint -> {
+						final Path imprintPath = imprint.path();
+						final Path oldBasePath = parser.findCurrentBasePath()
+								.orElseThrow(() -> new IOException("Cannot relocate imprint path `%s`; base path not known.".formatted(imprintPath)));
+						final Path path = changeBase(imprintPath, oldBasePath, argDataPath);
+						pathChecker.checkPathAsync(path, imprint).exceptionally(throwable -> {
+							foundErrorReference.compareAndSet(Optional.empty(), Optional.of(throwable)); //keep track of the first error that occurs
+							return null;
+						});
+					}));
+				} while(foundImprint.isPresent() && foundErrorReference.get().isEmpty());
+
+				foundErrorReference.get().ifPresent(throwingConsumer(throwable -> { //propagate and let the application handle any error
+					throw throwable;
+				}));
+			}
+			timeElapsed = status.getElapsedTime();
+		}
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
+				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(timeElapsed.toHours(), timeElapsed.toMinutesPart(), timeElapsed.toSecondsPart())).reset());
+	}
+
+	/**
+	 * Implementation of a path checker listener that prints status information to {@link System#err} as paths are checked.
+	 * <p>
+	 * If {@link DatimprintCli#isVerbose()} is enabled, directories will be printed separately as they are checked. The idea is that directories provide some
+	 * indication of progress (assuming they were traversed in some order when producing the imprints file), but will not ever show up in the status because they
+	 * do not have content fingerprints calculated for the check operation.
+	 * </p>
+	 * @author Garret Wilson
+	 */
+	private class CheckStatus extends CliStatus<Path> implements PathChecker.Listener {
+
+		public CheckStatus() {
+			super(System.err);
+		}
+
+		@Override
+		public void onCheckPath(final Path path, final PathImprint imprint) {
+			incrementCount();
+			if(isVerbose() && isDirectory(path)) {
+				printLineAsync(path.toString());
+			}
+		}
+
+		@Override
+		public void beforeCheckPath(final Path path) {
+			addWork(path);
+		}
+
+		@Override
+		public void afterCheckPath(final Path path) {
+			removeWork(path);
 		}
 
 	}
