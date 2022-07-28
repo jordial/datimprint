@@ -29,7 +29,7 @@ import static org.zalando.fauxpas.FauxPas.*;
 
 import java.io.*;
 import java.nio.file.*;
-import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.*;
 import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.*;
@@ -233,9 +233,10 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	}
 
 	/**
-	 * Generates an imprint of a single path, which must be a regular file or a directory, and then produces it to the imprint consumer.
+	 * Generates an imprint of a single path, which must be a regular file or a directory, and then produces it to the imprint consumer. Because a directory
+	 * imprint fingerprint is formed from the imprints of all its children and so on, this method ultimately involves recursion to all the descendants of any
+	 * directory.
 	 * @implSpec This implementation delegates to {@link #produceImprint(Path)} to produce the imprint asynchronously and blocks until the imprint is ready.
-	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
 	 * @param path The path for which an imprint should be produced.
 	 * @return An imprint of the path.
 	 * @throws IOException if there is a problem accessing the file system.
@@ -252,9 +253,9 @@ public class PathImprintGenerator implements Closeable, Clogged {
 
 	/**
 	 * Asynchronously generates an imprint of a single path, which must be a regular file or a directory, and then produces it to the imprint consumer, if there
-	 * is one.
+	 * is one. Because a directory imprint fingerprint is formed from the imprints of all its children and so on, this method ultimately involves asynchronous
+	 * recursion to all the descendants of any directory.
 	 * @implSpec This implementation delegates to {@link #generateImprintAsync(Path)}.
-	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
 	 * @param path The path for which an imprint should be produced.
 	 * @return A future imprint of the path.
 	 * @throws IOException if there is a problem accessing the file system.
@@ -306,7 +307,8 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	}
 
 	/**
-	 * Asynchronously generates imprints for all immediate children of a directory.
+	 * Asynchronously generates imprints for all immediate children of a directory. Because child imprint fingerprints are formed from the imprints of their own
+	 * children, this method ultimately includes asynchronous recursion to all the descendants of the directory.
 	 * @apiNote Perhaps a more modularized approach would be to separate generation from production. However generation of each direct child must include
 	 *          production of the second level and below via the ultimate calls to {@link #generateDirectoryContentChildrenFingerprintsAsync(Path)} (otherwise the
 	 *          caller would have no way to produce the imprint of subsequent levels). It is more consistent to schedule production of the immediate children
@@ -315,7 +317,10 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 *          of children more quickly, freeing resources for other children without needing to wait until the directory listing is finished.
 	 * @implSpec This implementation uses the executor returned by {@link #getGenerateExecutor()} for traversal.
 	 * @implSpec This implementation delegates to {@link #produceImprintAsync(Path)} to produce each child imprint.
-	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
+	 * @implSpec Any child directories that are hidden and marked as DOS "system" directories are ignored. This is to prevent {@link AccessDeniedException} when
+	 *           trying to access directories such as <code>System Volume Information</code> and <code>$RECYCLE.BIN</code> on Windows file systems.
+	 * @implNote The approach used in this method to detect hidden directories only works from Java 13 onwards because of bug
+	 *           <a href="https://bugs.openjdk.org/browse/JDK-8215467">JDK-8215467</a>.
 	 * @param directory The path for which an imprint should be produced.
 	 * @return A map of all future imprints for each child mapped to the path of each child.
 	 * @throws IOException if there is a problem traversing the directory or reading file contents.
@@ -324,7 +329,17 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		return supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.onEnterDirectory(directory));
 			try (final Stream<Path> childPaths = list(directory)) {
-				return childPaths.collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
+				return childPaths.filter(throwingPredicate(childPath -> { //ignore hidden+system directories
+					if(isDirectory(childPath) && isHidden(childPath)) { //isHidden() only works for directories from Java 13 onwards; see JDK-8215467
+						try {
+							final DosFileAttributes dosFileAttributes = readAttributes(childPath, DosFileAttributes.class);
+							return !dosFileAttributes.isSystem(); //only hidden+system directories are ignored
+						} catch(final UnsupportedOperationException unsupportedOperationException) {
+							//not an error condition; simply don't filter out the hidden directory if it isn't on a DOS file system
+						}
+					}
+					return true;
+				})).collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
 			}
 		}), getGenerateExecutor());
 	}
@@ -348,13 +363,11 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	}
 
 	/**
-	 * Generates fingerprints of a directory's child contents and children asynchronously.
-	 * @apiNote Because each child directory imprint depends on the fingerprint of its children, this method ultimately includes recursive traversal of all
-	 *          descendants.
+	 * Generates fingerprints of a directory's child contents and children asynchronously. Because each child directory imprint fingerprint depends on the
+	 * fingerprints of its children, this method ultimately includes recursive traversal of all descendants.
 	 * @apiNote This method inherently involves production of child imprints during generation of the directory contents fingerprint.
 	 * @implSpec This method generates child imprints by delegating to {@link #produceChildImprintsAsync(Path)}.
 	 * @implSpec This implementation uses the executor returned by {@link #getGenerateExecutor()}.
-	 * @implNote This method involves asynchronous recursion to all the descendants of the directory.
 	 * @param directory The directory for which a fingerprint should be generated of the children.
 	 * @return A future fingerprint of the directory content fingerprints and children fingerprints.
 	 * @throws IOException if there is a problem traversing the directory or reading file contents.
