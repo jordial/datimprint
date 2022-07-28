@@ -18,18 +18,20 @@ package com.jordial.datimprint.file;
 
 import static com.jordial.datimprint.file.PathImprintGenerator.FINGERPRINT_ALGORITHM;
 import static java.nio.file.Files.*;
-import static java.util.stream.Collectors.toMap;
+import static java.util.stream.Collectors.*;
 import static org.hamcrest.MatcherAssert.*;
 import static org.hamcrest.Matchers.*;
+import static org.junit.Assume.*;
 
 import java.io.IOException;
 import java.nio.file.*;
-import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.*;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.*;
-import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.condition.*;
+import org.junit.jupiter.api.io.*;
 
 import com.globalmentor.security.Hash;
 
@@ -249,6 +251,41 @@ public class PathImprintGeneratorIT {
 		assertThat("Produced child imprints were returned.", childImprintsByPath.values(), containsInAnyOrder(testProducedImprints.toArray()));
 		childImprintsByPath.entrySet().forEach(childImprintByPath -> assertThat("Returnd child imprint was mapped to correctPath.", childImprintByPath.getKey(),
 				is(childImprintByPath.getValue().path())));
+	}
+
+	/**
+	 * Verify that any child directories that are hidden and marked as DOS "system" directories are ignored. This is to prevent {@link AccessDeniedException} when
+	 * trying to access directories such as <code>System Volume Information</code> and <code>$RECYCLE.BIN</code> on Windows file systems.
+	 * @see PathImprintGenerator#produceChildImprintsAsync(Path)
+	 */
+	@Test
+	@EnabledOnOs({OS.WINDOWS})
+	void verifyProduceChildImprintsAsyncIgnoresDosHiddenSystemDirectories(@TempDir final Path tempDir) throws IOException {
+		final Path directory = createDirectory(tempDir.resolve("dir"));
+		assumeThat("We assume that on Windows the file system uses DOS attributes; otherwise this test will not work.",
+				readAttributes(directory, BasicFileAttributes.class), isA(DosFileAttributes.class));
+
+		final Path fooFile = writeString(directory.resolve("foo.txt"), "foo");
+		final Path hiddenFile = writeString(directory.resolve("hidden.txt"), "hidden");
+		setAttribute(hiddenFile, "dos:hidden", true);
+		final Path systemFile = writeString(directory.resolve("system.txt"), "system");
+		setAttribute(systemFile, "dos:system", true);
+		final Path hiddenSystemFile = writeString(directory.resolve("hidden-system.txt"), "hidden,system");
+		setAttribute(hiddenSystemFile, "dos:hidden", true);
+		setAttribute(hiddenSystemFile, "dos:system", true);
+		final Path fooDirectory = createDirectory(directory.resolve("foo"));
+		final Path hiddenDirectory = createDirectory(directory.resolve("hidden"));
+		setAttribute(hiddenDirectory, "dos:hidden", true);
+		final Path systemDirectory = createDirectory(directory.resolve("system"));
+		setAttribute(systemDirectory, "dos:system", true);
+		final Path hiddenSystemDirectory = createDirectory(directory.resolve("hidden-system"));
+		setAttribute(hiddenSystemDirectory, "dos:hidden", true);
+		setAttribute(hiddenSystemDirectory, "dos:system", true);
+		final Path barFile = writeString(directory.resolve("bar.txt"), "bar");
+		final Path barDirectory = createDirectory(directory.resolve("bar"));
+
+		assertThat(testImprintGenerator.produceChildImprintsAsync(directory).join().keySet(), //should contain all children except hidden+system directory
+				containsInAnyOrder(fooFile, barFile, hiddenFile, systemFile, hiddenSystemFile, fooDirectory, barDirectory, hiddenDirectory, systemDirectory));
 	}
 
 	/** @see PathImprintGenerator#generateImprintAsync(Path) */
