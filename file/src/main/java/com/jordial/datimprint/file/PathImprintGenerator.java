@@ -614,6 +614,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 
 		/**
 		 * Returns a default executor for traversal and imprint generation.
+		 * @implSpec This implementation returns a thread pool based upon the number of processors.
 		 * @return A new default generate executor.
 		 */
 		public static Executor newDefaultGenerateExecutor() {

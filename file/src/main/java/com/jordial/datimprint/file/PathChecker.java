@@ -158,12 +158,12 @@ public class PathChecker implements Closeable, Clogged {
 		try { //at this point both executor service should be shut down or requested to shut down now
 			if(checkExecutor instanceof ExecutorService checkExecutorService) {
 				if(!checkExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
-					throw new IOException("Imprint generator service not shut down properly; imprint generation may be incomplete.");
+					throw new IOException("Imprint check service not shut down properly; imprint checking may be incomplete.");
 				}
 			}
 			if(produceExecutor != checkExecutor && produceExecutor instanceof ExecutorService produceExecutorService) { //if we have separate executor services
 				if(!produceExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
-					throw new IOException("Imprint production service not shut down properly; all imprints may not have been written.");
+					throw new IOException("Result production service not shut down properly; all results may not have been produced.");
 				}
 			}
 		} catch(final InterruptedException interruptedException) {
@@ -569,12 +569,20 @@ public class PathChecker implements Closeable, Clogged {
 			return new PathChecker(this);
 		}
 
+		/** The size of the work queue used for the default check executor. */
+		public static int DEFAULT_CHECK_EXECUTOR_QUEUE_SIZE = 1_000_000;
+
 		/**
 		 * Returns a default executor for checking paths.
+		 * @implSpec This implementation returns a thread pool based upon the number of processors. In addition the queue size is limited to
+		 *           {@link #DEFAULT_CHECK_EXECUTOR_QUEUE_SIZE}, and when the queue is full the caller will run the tasks in the calling thread as a form of
+		 *           backpressure.
 		 * @return A new default check executor.
 		 */
 		public static Executor newDefaultCheckExecutor() {
-			return newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+			final int threadCount = Runtime.getRuntime().availableProcessors();
+			return new ThreadPoolExecutor(threadCount, threadCount, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<Runnable>(DEFAULT_CHECK_EXECUTOR_QUEUE_SIZE),
+					new ThreadPoolExecutor.CallerRunsPolicy());
 		}
 
 		/**

@@ -30,6 +30,7 @@ import java.nio.file.*;
 import java.time.Duration;
 import java.util.function.Consumer;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.*;
 
 import javax.annotation.*;
@@ -231,22 +232,31 @@ public class DatimprintCli extends BaseCliApplication {
 			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 				pathCheckerBuilder.withListener(status);
 			}
+			Optional<CompletableFuture<PathChecker.Result>> foundFutureResult = Optional.empty();
 			try (final PathChecker pathChecker = pathCheckerBuilder.build()) {
 				final Datim.Parser parser = new Datim.Parser(inputStream);
 				Optional<PathImprint> foundImprint;
 				do {
-					foundImprint = parser.readImprint();
-					foundImprint.ifPresent(throwingConsumer(imprint -> {
+					final Optional<CompletableFuture<PathChecker.Result>> lastFoundFutureResult = foundFutureResult;
+					foundImprint = parser.readImprint(); //read an imprint
+					foundFutureResult = foundImprint.map(throwingFunction(imprint -> { //schedule a result for checking the imprint
 						final Path imprintPath = imprint.path();
 						final Path oldBasePath = parser.findCurrentBasePath()
 								.orElseThrow(() -> new IOException("Cannot relocate imprint path `%s`; base path not known.".formatted(imprintPath)));
 						final Path path = changeBase(imprintPath, oldBasePath, argDataPath);
-						pathChecker.checkPathAsync(path, imprint).exceptionally(throwable -> {
+						return pathChecker.checkPathAsync(path, imprint).exceptionally(throwable -> {
 							foundErrorReference.compareAndSet(Optional.empty(), Optional.of(throwable)); //keep track of the first error that occurs
 							return null;
 						});
-					}));
+					})).map(
+							//if we have a new future result, chain it to the last found future result
+							newFutureResult -> lastFoundFutureResult.map(lastFutureResult -> lastFutureResult.thenCombine(newFutureResult, (__, result) -> result))
+									.orElse(newFutureResult)) //if there is no last found future result, use the new future result
+							//if we do not have a new future result, just stick with the one we found last (which may also be empty)
+							.map(Optional::of).orElse(lastFoundFutureResult);
 				} while(foundImprint.isPresent() && foundErrorReference.get().isEmpty());
+
+				foundFutureResult.ifPresent(CompletableFuture::join); //join the last future result we found; this will ensure the entire chain is complete
 
 				foundErrorReference.get().ifPresent(throwingConsumer(throwable -> { //propagate and let the application handle any error
 					throw throwable;
@@ -275,7 +285,6 @@ public class DatimprintCli extends BaseCliApplication {
 
 		@Override
 		public void onCheckPath(final Path path, final PathImprint imprint) {
-			incrementCount();
 			if(isVerbose() && isDirectory(path)) {
 				printLineAsync(path.toString());
 			}
@@ -288,6 +297,7 @@ public class DatimprintCli extends BaseCliApplication {
 
 		@Override
 		public void afterCheckPath(final Path path) {
+			incrementCount(); //it makes more sense to the user if the count shows the number of checks completed, rather than the number of imprints read, which may be increase quickly and give no indication of actual checking progress
 			removeWork(path);
 		}
 
