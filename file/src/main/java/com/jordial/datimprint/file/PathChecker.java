@@ -202,7 +202,8 @@ public class PathChecker implements Closeable, Clogged {
 			findListener().ifPresent(listener -> listener.afterCheckPath(path));
 			return result;
 		}), getCheckExecutor());
-		return findResultConsumer().map(resultConsumer -> futureResult.thenApply(result -> { //only produce if there is a consumer
+		//chain production of the result if there is a consumer
+		final CompletableFuture<Result> futureResultProduced = findResultConsumer().map(resultConsumer -> futureResult.thenApply(result -> { //only produce if there is a consumer
 			if(foundProduceErrorReference.get().isEmpty()) { //skip production if there is any error in effect
 				runAsync(() -> resultConsumer.accept(result), getProduceExecutor()).exceptionally(throwable -> {
 					foundProduceErrorReference.compareAndSet(Optional.empty(), Optional.of(throwable)); //keep track of the first error that occurs
@@ -210,7 +211,14 @@ public class PathChecker implements Closeable, Clogged {
 				});
 			}
 			return result;
-		})).orElse(futureResult); //otherwise the future result is all we need
+		})).orElse(futureResult); //stay with the same future result if there is no consumer
+		//chain reporting of any mismatch result if there is a listener
+		return findListener().map(listener -> futureResultProduced.thenApply(result -> {
+			if(!result.isMatch()) {
+				listener.onResultMismatch(result);
+			}
+			return result;
+		})).orElse(futureResultProduced); //stay with the same produced future result if there is no listener
 	}
 
 	/**
@@ -449,6 +457,12 @@ public class PathChecker implements Closeable, Clogged {
 		 * @param path The path being checked.
 		 */
 		void afterCheckPath(@Nonnull Path path);
+
+		/**
+		 * Called when a mismatch is discovered.
+		 * @param result The mismatch result.
+		 */
+		void onResultMismatch(@Nonnull Result result);
 
 	}
 

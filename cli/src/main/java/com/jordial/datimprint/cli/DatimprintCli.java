@@ -203,13 +203,12 @@ public class DatimprintCli extends BaseCliApplication {
 		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile)); final CheckStatus status = new CheckStatus()) {
 			final Consumer<PathChecker.Result> resultConsumer = throwingConsumer(result -> {
 				if(!result.isMatch()) {
-					final String notificationText = result instanceof PathChecker.MissingPathResult
-							? "No path `%s` matching imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path())
-							: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
-					status.notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
 					//create the entire report string rather than printing each asynchronously to prevent the lines becoming separated
 					final List<String> report = new ArrayList<>();
-					report.add("- " + notificationText); //`- error` 
+					final String description = result instanceof PathChecker.MissingPathResult
+							? "Missing path `%s` to match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path())
+							: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
+					report.add("- " + description); //`- error` 
 					//add report detail lines for paths that exist
 					if(result instanceof PathChecker.ExistingPathResult existingPathResult) {
 						existingPathResult.getMismatches().stream().sorted(comparingInt(PathChecker.Result.Mismatch::ordinal)) //sort by ordinal to show most severe problems first
@@ -299,6 +298,14 @@ public class DatimprintCli extends BaseCliApplication {
 		public void afterCheckPath(final Path path) {
 			incrementCount(); //it makes more sense to the user if the count shows the number of checks completed, rather than the number of imprints read, which may be increase quickly and give no indication of actual checking progress
 			removeWork(path);
+		}
+
+		@Override
+		public void onResultMismatch(final PathChecker.Result result) {
+			final CharSequence pathLabel = constrainLabelLength(result.getPath().toString(), WORK_MAX_LABEL_LENGTH);
+			final String notificationText = result instanceof PathChecker.MissingPathResult ? "Missing path `%s` for imprint.".formatted(pathLabel)
+					: "Path `%s` does not match imprint.".formatted(pathLabel);
+			notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
 		}
 
 	}
