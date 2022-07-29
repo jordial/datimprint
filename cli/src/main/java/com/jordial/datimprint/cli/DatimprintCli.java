@@ -232,12 +232,14 @@ public class DatimprintCli extends BaseCliApplication {
 				pathCheckerBuilder.withListener(status);
 			}
 			Optional<CompletableFuture<PathChecker.Result>> foundFutureResult = Optional.empty();
+			final AtomicLong imprintCount = new AtomicLong(0);
 			try (final PathChecker pathChecker = pathCheckerBuilder.build()) {
 				final Datim.Parser parser = new Datim.Parser(inputStream);
 				Optional<PathImprint> foundImprint;
 				do {
 					final Optional<CompletableFuture<PathChecker.Result>> lastFoundFutureResult = foundFutureResult;
 					foundImprint = parser.readImprint(); //read an imprint
+					foundImprint.ifPresent(__ -> status.setTotal(imprintCount.incrementAndGet())); //keep track of the total number of imprints read, updating the status
 					foundFutureResult = foundImprint.map(throwingFunction(imprint -> { //schedule a result for checking the imprint
 						final Path imprintPath = imprint.path();
 						final Path oldBasePath = parser.findCurrentBasePath()
