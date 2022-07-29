@@ -117,7 +117,7 @@ public class PathImprintGeneratorIT {
 				FINGERPRINT_ALGORITHM.hash(emptyDirectoryImprint.fingerprint(), exampleBinaryFileImprint.fingerprint(), exampleTextFileImprint.fingerprint(),
 						foobarDirectoryImprint.fingerprint(), level1DirectoryImprint.fingerprint()),
 				FINGERPRINT_ALGORITHM);
-		assertThat(testImprintGenerator.produceImprint(tempDir), is(tempDirectoryImprint));
+		assertThat(testImprintGenerator.produceImprintAsync(tempDir).join(), is(tempDirectoryImprint));
 		assertThat(testProducedImprints,
 				containsInAnyOrder(tempDirectoryImprint, exampleTextFileImprint, exampleBinaryFileImprint, foobarDirectoryImprint, fooFileImprint, barFileImprint,
 						emptyDirectoryImprint, level1DirectoryImprint, level1ThisFileImprint, level1EmptyFileImprint, level2aDirectoryImprint, level2bDirectoryImprint,

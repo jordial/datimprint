@@ -19,6 +19,7 @@ package com.jordial.datimprint.cli;
 import static com.globalmentor.io.Paths.*;
 import static java.nio.charset.StandardCharsets.*;
 import static java.nio.file.Files.*;
+import static java.nio.file.LinkOption.*;
 import static java.util.Comparator.*;
 import static java.util.stream.Collectors.*;
 import static org.fusesource.jansi.Ansi.*;
@@ -30,6 +31,7 @@ import java.nio.file.*;
 import java.time.Duration;
 import java.util.function.Consumer;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.*;
 
 import javax.annotation.*;
@@ -89,11 +91,11 @@ public class DatimprintCli extends BaseCliApplication {
 
 		logAppInfo();
 
+		final List<Path> dataPaths = argDataPaths.stream().map(throwingFunction(path -> path.toRealPath(NOFOLLOW_LINKS))).collect(toUnmodifiableList());
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a(
-				"Generating imprint for %s ...".formatted(argDataPaths.stream().map(Path::toAbsolutePath).map(path -> "`%s`".formatted(path)).collect(joining(", "))))
-				.reset());
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
+				.a("Generating imprint for %s ...".formatted(dataPaths.stream().map(path -> "`%s`".formatted(path)).collect(joining(", ")))).reset());
 		final Duration timeElapsed;
 		try (final GenerateStatus status = new GenerateStatus()) {
 			final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
@@ -110,9 +112,9 @@ public class DatimprintCli extends BaseCliApplication {
 					}
 					argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
 					try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
-						for(final Path dataPath : argDataPaths) {
+						for(final Path dataPath : dataPaths) {
 							datimSerializer.appendBasePath(writer, dataPath);
-							imprintGenerator.produceImprint(dataPath); //any errors encountered will be propagated in this synchronous call
+							imprintGenerator.produceImprintAsync(dataPath).join(); //any errors encountered will be propagated in this synchronous call
 							//At this point the entire tree has been traversed. There may still be imprints being produced (i.e written),
 							//but starting generating and producing imprints for another tree will cause no problem—those imprints will just be added to the queue.
 						}
@@ -196,19 +198,19 @@ public class DatimprintCli extends BaseCliApplication {
 
 		logAppInfo();
 
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(argDataPath, argImprintFile)).reset());
+		final Path dataPath = argDataPath.toRealPath(NOFOLLOW_LINKS);
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(dataPath, argImprintFile)).reset());
 		final Duration timeElapsed;
 		final AtomicReference<Optional<Throwable>> foundErrorReference = new AtomicReference<>(Optional.empty());
 		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile)); final CheckStatus status = new CheckStatus()) {
 			final Consumer<PathChecker.Result> resultConsumer = throwingConsumer(result -> {
 				if(!result.isMatch()) {
-					final String notificationText = result instanceof PathChecker.MissingPathResult
-							? "No path `%s` matching imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path())
-							: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
-					status.notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
 					//create the entire report string rather than printing each asynchronously to prevent the lines becoming separated
 					final List<String> report = new ArrayList<>();
-					report.add("- " + notificationText); //`- error` 
+					final String description = result instanceof PathChecker.MissingPathResult
+							? "Missing path `%s` to match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path())
+							: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
+					report.add("- " + description); //`- error` 
 					//add report detail lines for paths that exist
 					if(result instanceof PathChecker.ExistingPathResult existingPathResult) {
 						existingPathResult.getMismatches().stream().sorted(comparingInt(PathChecker.Result.Mismatch::ordinal)) //sort by ordinal to show most severe problems first
@@ -231,22 +233,33 @@ public class DatimprintCli extends BaseCliApplication {
 			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 				pathCheckerBuilder.withListener(status);
 			}
+			Optional<CompletableFuture<PathChecker.Result>> foundFutureResult = Optional.empty();
+			final AtomicLong imprintCount = new AtomicLong(0);
 			try (final PathChecker pathChecker = pathCheckerBuilder.build()) {
 				final Datim.Parser parser = new Datim.Parser(inputStream);
 				Optional<PathImprint> foundImprint;
 				do {
-					foundImprint = parser.readImprint();
-					foundImprint.ifPresent(throwingConsumer(imprint -> {
+					final Optional<CompletableFuture<PathChecker.Result>> lastFoundFutureResult = foundFutureResult;
+					foundImprint = parser.readImprint(); //read an imprint
+					foundImprint.ifPresent(__ -> status.setTotal(imprintCount.incrementAndGet())); //keep track of the total number of imprints read, updating the status
+					foundFutureResult = foundImprint.map(throwingFunction(imprint -> { //schedule a result for checking the imprint
 						final Path imprintPath = imprint.path();
 						final Path oldBasePath = parser.findCurrentBasePath()
 								.orElseThrow(() -> new IOException("Cannot relocate imprint path `%s`; base path not known.".formatted(imprintPath)));
-						final Path path = changeBase(imprintPath, oldBasePath, argDataPath);
-						pathChecker.checkPathAsync(path, imprint).exceptionally(throwable -> {
+						final Path path = changeBase(imprintPath, oldBasePath, dataPath);
+						return pathChecker.checkPathAsync(path, imprint).exceptionally(throwable -> {
 							foundErrorReference.compareAndSet(Optional.empty(), Optional.of(throwable)); //keep track of the first error that occurs
 							return null;
 						});
-					}));
+					})).map(
+							//if we have a new future result, chain it to the last found future result
+							newFutureResult -> lastFoundFutureResult.map(lastFutureResult -> lastFutureResult.thenCombine(newFutureResult, (__, result) -> result))
+									.orElse(newFutureResult)) //if there is no last found future result, use the new future result
+							//if we do not have a new future result, just stick with the one we found last (which may also be empty)
+							.map(Optional::of).orElse(lastFoundFutureResult);
 				} while(foundImprint.isPresent() && foundErrorReference.get().isEmpty());
+
+				foundFutureResult.ifPresent(CompletableFuture::join); //join the last future result we found; this will ensure the entire chain is complete
 
 				foundErrorReference.get().ifPresent(throwingConsumer(throwable -> { //propagate and let the application handle any error
 					throw throwable;
@@ -275,7 +288,6 @@ public class DatimprintCli extends BaseCliApplication {
 
 		@Override
 		public void onCheckPath(final Path path, final PathImprint imprint) {
-			incrementCount();
 			if(isVerbose() && isDirectory(path)) {
 				printLineAsync(path.toString());
 			}
@@ -288,7 +300,16 @@ public class DatimprintCli extends BaseCliApplication {
 
 		@Override
 		public void afterCheckPath(final Path path) {
+			incrementCount(); //it makes more sense to the user if the count shows the number of checks completed, rather than the number of imprints read, which may be increase quickly and give no indication of actual checking progress
 			removeWork(path);
+		}
+
+		@Override
+		public void onResultMismatch(final PathChecker.Result result) {
+			final CharSequence pathLabel = constrainLabelLength(result.getPath().toString(), WORK_MAX_LABEL_LENGTH);
+			final String notificationText = result instanceof PathChecker.MissingPathResult ? "Missing path `%s` for imprint.".formatted(pathLabel)
+					: "Path `%s` does not match imprint.".formatted(pathLabel);
+			notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
 		}
 
 	}

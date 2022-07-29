@@ -232,22 +232,6 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		}));
 	}
 
-	/**
-	 * Generates an imprint of a single path, which must be a regular file or a directory, and then produces it to the imprint consumer. Because a directory
-	 * imprint fingerprint is formed from the imprints of all its children and so on, this method ultimately involves recursion to all the descendants of any
-	 * directory.
-	 * @implSpec This implementation delegates to {@link #produceImprint(Path)} to produce the imprint asynchronously and blocks until the imprint is ready.
-	 * @param path The path for which an imprint should be produced.
-	 * @return An imprint of the path.
-	 * @throws IOException if there is a problem accessing the file system.
-	 * @see #findImprintConsumer()
-	 * @see #getProduceExecutor()
-	 * @throws CompletionException if there was an error completing asynchronous generation and production.
-	 */
-	public PathImprint produceImprint(@Nonnull final Path path) throws IOException { //TODO consider removing this method to simplify the API
-		return produceImprintAsync(path).join();
-	}
-
 	/** Record of any error encountered while producing. A present value suspends production and causes the exception to be thrown during {@link #close()}. */
 	private final AtomicReference<Optional<Throwable>> foundProduceErrorReference = new AtomicReference<>(Optional.empty());
 
@@ -614,6 +598,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 
 		/**
 		 * Returns a default executor for traversal and imprint generation.
+		 * @implSpec This implementation returns a thread pool based upon the number of processors.
 		 * @return A new default generate executor.
 		 */
 		public static Executor newDefaultGenerateExecutor() {
