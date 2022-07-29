@@ -19,6 +19,7 @@ package com.jordial.datimprint.cli;
 import static com.globalmentor.io.Paths.*;
 import static java.nio.charset.StandardCharsets.*;
 import static java.nio.file.Files.*;
+import static java.nio.file.LinkOption.*;
 import static java.util.Comparator.*;
 import static java.util.stream.Collectors.*;
 import static org.fusesource.jansi.Ansi.*;
@@ -90,11 +91,11 @@ public class DatimprintCli extends BaseCliApplication {
 
 		logAppInfo();
 
+		final List<Path> dataPaths = argDataPaths.stream().map(throwingFunction(path -> path.toRealPath(NOFOLLOW_LINKS))).collect(toUnmodifiableList());
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a(
-				"Generating imprint for %s ...".formatted(argDataPaths.stream().map(Path::toAbsolutePath).map(path -> "`%s`".formatted(path)).collect(joining(", "))))
-				.reset());
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
+				.a("Generating imprint for %s ...".formatted(dataPaths.stream().map(path -> "`%s`".formatted(path)).collect(joining(", ")))).reset());
 		final Duration timeElapsed;
 		try (final GenerateStatus status = new GenerateStatus()) {
 			final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
@@ -111,7 +112,7 @@ public class DatimprintCli extends BaseCliApplication {
 					}
 					argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
 					try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
-						for(final Path dataPath : argDataPaths) {
+						for(final Path dataPath : dataPaths) {
 							datimSerializer.appendBasePath(writer, dataPath);
 							imprintGenerator.produceImprint(dataPath); //any errors encountered will be propagated in this synchronous call
 							//At this point the entire tree has been traversed. There may still be imprints being produced (i.e written),
@@ -197,7 +198,8 @@ public class DatimprintCli extends BaseCliApplication {
 
 		logAppInfo();
 
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(argDataPath, argImprintFile)).reset());
+		final Path dataPath = argDataPath.toRealPath(NOFOLLOW_LINKS);
+		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(dataPath, argImprintFile)).reset());
 		final Duration timeElapsed;
 		final AtomicReference<Optional<Throwable>> foundErrorReference = new AtomicReference<>(Optional.empty());
 		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile)); final CheckStatus status = new CheckStatus()) {
@@ -244,7 +246,7 @@ public class DatimprintCli extends BaseCliApplication {
 						final Path imprintPath = imprint.path();
 						final Path oldBasePath = parser.findCurrentBasePath()
 								.orElseThrow(() -> new IOException("Cannot relocate imprint path `%s`; base path not known.".formatted(imprintPath)));
-						final Path path = changeBase(imprintPath, oldBasePath, argDataPath);
+						final Path path = changeBase(imprintPath, oldBasePath, dataPath);
 						return pathChecker.checkPathAsync(path, imprint).exceptionally(throwable -> {
 							foundErrorReference.compareAndSet(Optional.empty(), Optional.of(throwable)); //keep track of the first error that occurs
 							return null;
