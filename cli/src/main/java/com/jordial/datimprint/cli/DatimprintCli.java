@@ -114,7 +114,7 @@ public class DatimprintCli extends BaseCliApplication {
 					try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
 						for(final Path dataPath : dataPaths) {
 							datimSerializer.appendBasePath(writer, dataPath);
-							imprintGenerator.produceImprint(dataPath); //any errors encountered will be propagated in this synchronous call
+							imprintGenerator.produceImprintAsync(dataPath).join(); //any errors encountered will be propagated in this synchronous call
 							//At this point the entire tree has been traversed. There may still be imprints being produced (i.e written),
 							//but starting generating and producing imprints for another tree will cause no problem—those imprints will just be added to the queue.
 						}

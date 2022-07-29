@@ -222,7 +222,8 @@ public class PathChecker implements Closeable, Clogged {
 	}
 
 	/**
-	 * The result of checking a path against an imprint.
+	 * The result of checking a path against an imprint. Equality is based upon {@link #getPath()}, {@link #getImprint()}, {@link #isMatch()}, and
+	 * {@link #getMismatches()}.
 	 * @author Garret Wilson
 	 */
 	public sealed interface Result {
@@ -279,6 +280,24 @@ public class PathChecker implements Closeable, Clogged {
 		protected AbstractResult(@Nonnull final Path path, @Nonnull final PathImprint imprint) {
 			this.path = requireNonNull(path);
 			this.imprint = requireNonNull(imprint);
+		}
+
+		@Override
+		public int hashCode() {
+			return hash(getPath(), getImprint(), isMatch(), getMismatches());
+		}
+
+		@Override
+		public boolean equals(final Object object) {
+			if(this == object) {
+				return true;
+			}
+			if(!(object instanceof Result)) {
+				return false;
+			}
+			final Result result = (Result)object;
+			return getPath().equals(result.getPath()) && getImprint().equals(result.getImprint()) && isMatch() == result.isMatch()
+					&& getMismatches().equals(result.getMismatches());
 		}
 
 	}
@@ -361,6 +380,10 @@ public class PathChecker implements Closeable, Clogged {
 
 		/**
 		 * Constructor.
+		 * @implSpec Filenames are checked against their file system representations, even on Windows, to detect changes in case. If one of the paths has no
+		 *           filename at all, the filenames are considered to match. This accounts for the situation in which a directory is being compared with the root,
+		 *           e.g. if a backup <code>B:\backup\</code> was made from <code>A:\</code>. The latter would not have a filename, yet the directories should still
+		 *           be counted as a match.
 		 * @param path The path being checked; converted to the real path of the file system without following links, to ensure a unique path and the correct case.
 		 * @param imprint The imprint against which the path is being checked.
 		 * @throws IOException if there is an error getting additional information about the path.
@@ -369,8 +392,16 @@ public class PathChecker implements Closeable, Clogged {
 			super(path.toRealPath(NOFOLLOW_LINKS), imprint);
 			final EnumSet<Mismatch> moreMismatches = EnumSet.noneOf(Mismatch.class);
 			//check the filename (or none) against that of the path saved in the base class, which has been converted to the real path (i.e. true case)
-			if(!Objects.equals(getPath().getFileName(), imprint.path().getFileName())) {
-				moreMismatches.add(Mismatch.FILENAME);
+			@Nullable
+			final Path filenamePath = getPath().getFileName();
+			@Nullable
+			final Path imprintFilenamePath = imprint.path().getFileName();
+			//if one of the paths has no filename, we assume that it was the base path (e.g. `A:\`) which does not count as a mismatch
+			if(filenamePath != null && imprintFilenamePath != null) {
+				//use the string form of the filename paths, because Windows will compensate for case insensitivity in comparing `Path.equals()`
+				if(!filenamePath.toString().equals(imprintFilenamePath.toString())) {
+					moreMismatches.add(Mismatch.FILENAME);
+				}
 			}
 			this.contentModifiedAt = getLastModifiedTime(path);
 			if(!contentModifiedAt.equals(imprint.contentModifiedAt())) {
