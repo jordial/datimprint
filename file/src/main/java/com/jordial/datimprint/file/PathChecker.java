@@ -189,18 +189,21 @@ public class PathChecker implements Closeable, Clogged {
 		findListener().ifPresent(listener -> listener.onCheckPath(path, imprint));
 		final CompletableFuture<Result> futureResult = supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.beforeCheckPath(path));
-			final Result result;
-			if(isRegularFile(path)) {
-				result = new FileResult(path, imprint);
-			} else if(isDirectory(path)) {
-				result = new DirectoryResult(path, imprint);
-			} else if(!exists(path)) {
-				result = new MissingPathResult(path, imprint);
-			} else {
-				throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
+			try {
+				final Result result;
+				if(isRegularFile(path)) {
+					result = new FileResult(path, imprint);
+				} else if(isDirectory(path)) {
+					result = new DirectoryResult(path, imprint);
+				} else if(!exists(path)) {
+					result = new MissingPathResult(path, imprint);
+				} else {
+					throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
+				}
+				return result;
+			} finally { //even if there was an error, at least note we're finished checking the path
+				findListener().ifPresent(listener -> listener.afterCheckPath(path));
 			}
-			findListener().ifPresent(listener -> listener.afterCheckPath(path));
-			return result;
 		}), getCheckExecutor());
 		//chain production of the result if there is a consumer
 		final CompletableFuture<Result> futureResultProduced = findResultConsumer().map(resultConsumer -> futureResult.thenApply(result -> { //only produce if there is a consumer

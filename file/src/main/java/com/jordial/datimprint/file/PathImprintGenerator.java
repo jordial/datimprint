@@ -24,7 +24,9 @@ import static java.util.Objects.*;
 import static java.util.concurrent.CompletableFuture.*;
 import static java.util.concurrent.Executors.*;
 import static java.util.function.Function.*;
+import static java.util.function.Predicate.*;
 import static java.util.stream.Collectors.*;
+import static java.util.stream.Stream.*;
 import static org.zalando.fauxpas.FauxPas.*;
 
 import java.io.*;
@@ -100,6 +102,30 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		return foundListener;
 	}
 
+	private final Set<PathMatcher> ignorePathMatchers;
+
+	/**
+	 * The path matchers indicating which paths to ignore. These only apply to descendant paths; they will not be checked against the root path of a tree.
+	 * @apiNote These path matchers include both literal path ignores and glob path ignores.
+	 * @return The path matchers indicating which paths to ignore.
+	 */
+	protected Set<PathMatcher> getIgnorePathMatchers() {
+		return ignorePathMatchers;
+	}
+
+	/**
+	 * Determines if the given path should be ignored based upon the configured ignored paths and globs.
+	 * @implNote This implementation is not the most efficient, as it will check the path against each path matcher for every descendant path. Nevertheless the
+	 *           overhead, for just a few ignores, is probably less than the I/O operations, and any alternative would require great complexity for adding
+	 *           matching shortcuts.
+	 * @param path The path to check.
+	 * @return <code>true</code> if the path matches any of the configured ignored paths or globs.
+	 * @see #getIgnorePathMatchers()
+	 */
+	protected boolean isIgnoredPath(@Nonnull final Path path) {
+		return getIgnorePathMatchers().stream().anyMatch(pathMatcher -> pathMatcher.matches(path));
+	}
+
 	/**
 	 * No-args constructor.
 	 * @implSpec Traversal and imprint generation uses a thread pool that by default has the same number of threads as the number of available processors.
@@ -145,6 +171,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		this.produceExecutor = requireNonNull(produceExecutor);
 		this.foundImprintConsumer = Optional.empty();
 		this.foundListener = Optional.empty();
+		this.ignorePathMatchers = Set.of();
 	}
 
 	/**
@@ -161,6 +188,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		this.produceExecutor = requireNonNull(produceExecutor);
 		this.foundImprintConsumer = Optional.of(imprintConsumer);
 		this.foundListener = Optional.empty();
+		this.ignorePathMatchers = Set.of();
 	}
 
 	/**
@@ -172,6 +200,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		this.produceExecutor = builder.determineProduceExecutor();
 		this.foundImprintConsumer = builder.findImprintConsumer();
 		this.foundListener = builder.findListener();
+		this.ignorePathMatchers = builder.determineIgnorePathMatchers();
 	}
 
 	/** @return A new builder for specifying a new {@link PathImprintGenerator}. */
@@ -303,6 +332,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @implSpec This implementation delegates to {@link #produceImprintAsync(Path)} to produce each child imprint.
 	 * @implSpec Any child directories that are hidden and marked as DOS "system" directories are ignored. This is to prevent {@link AccessDeniedException} when
 	 *           trying to access directories such as <code>System Volume Information</code> and <code>$RECYCLE.BIN</code> on Windows file systems.
+	 * @implSpec This implementation ignores any configured paths and/or globs by calling {@link #isIgnoredPath(Path)}.
 	 * @implNote The approach used in this method to detect hidden directories only works from Java 13 onwards because of bug
 	 *           <a href="https://bugs.openjdk.org/browse/JDK-8215467">JDK-8215467</a>.
 	 * @param directory The path for which an imprint should be produced.
@@ -323,7 +353,8 @@ public class PathImprintGenerator implements Closeable, Clogged {
 						}
 					}
 					return true;
-				})).collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
+				})).filter(not(this::isIgnoredPath)) //ignore configured paths/globs
+						.collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
 			}
 		}), getGenerateExecutor());
 	}
@@ -340,9 +371,11 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	CompletableFuture<Hash> generateFileContentFingerprintAsync(@Nonnull final Path file) throws IOException {
 		return supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.beforeGenerateFileContentFingerprint(file));
-			final Hash fingerprint = FINGERPRINT_ALGORITHM.hash(file);
-			findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
-			return fingerprint;
+			try {
+				return FINGERPRINT_ALGORITHM.hash(file); //TODO find a way to get errors such as java.nio.file.FileSystemException (e.g. in use by another file) back to application quicker
+			} finally { //even if there was an error, at least note we're finished generating the file content fingerprint
+				findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
+			}
 		}), getGenerateExecutor());
 	}
 
@@ -618,6 +651,67 @@ public class PathImprintGenerator implements Closeable, Clogged {
 				return thread;
 			});
 		}
+
+		private Set<Path> ignorePaths = new HashSet<>();
+
+		/**
+		 * Specifies a single path to ignore.
+		 * @param ignorePath A path to ignore; might not exist.
+		 * @return This builder.
+		 */
+		public Builder withIgnorePath(@Nonnull final Path ignorePath) {
+			this.ignorePaths.add(ignorePath);
+			return this;
+		}
+
+		/**
+		 * Specifies paths to ignore.
+		 * @param ignorePaths Paths to ignore; each path might not exist.
+		 * @return This builder.
+		 */
+		public Builder withIgnorePaths(@Nonnull final Collection<Path> ignorePaths) {
+			this.ignorePaths.addAll(ignorePaths);
+			return this;
+		}
+
+		private Map<String, PathMatcher> pathMatchersByGlob = new HashMap<>();
+
+		/**
+		 * Specifies a single glob to ignore. If the same glob has been specified with another file system, the previous glob will be discarded.
+		 * @param fileSystem The file system for which the glob should be valid.
+		 * @param ignoreGlob A glob to ignore.
+		 * @return This builder.
+		 * @throws IllegalArgumentException if the glob does not have the correct syntax.
+		 */
+		public Builder withIgnoreGlob(@Nonnull final FileSystem fileSystem, @Nonnull final String ignoreGlob) {
+			pathMatchersByGlob.put(ignoreGlob, fileSystem.getPathMatcher("glob:" + requireNonNull(ignoreGlob)));
+			return this;
+		}
+
+		/**
+		 * Specifies globs to ignore. If any glob has been specified with another file system, the previous glob will be discarded.
+		 * @param fileSystem The file system for which the glob should be valid.
+		 * @param ignoreGlobs The globs to ignore
+		 * @return This builder.
+		 * @throws IllegalArgumentException if a glob does not have the correct syntax.
+		 */
+		public Builder withIgnoreGlobs(@Nonnull final FileSystem fileSystem, @Nonnull final Collection<String> ignoreGlobs) {
+			ignoreGlobs.forEach(ignoreGlob -> withIgnoreGlob(fileSystem, ignoreGlob));
+			return this;
+		}
+
+		/**
+		 * @return A set of path matchers including all the specified ignore paths and globs.
+		 * @see #withIgnorePath(Path)
+		 * @see #withIgnoreGlob(FileSystem, String)
+		 */
+		private Set<PathMatcher> determineIgnorePathMatchers() {
+			//if we have any ignore paths, create a custom PathMatcher to match against them all
+			final Optional<PathMatcher> foundIgnorePathsPathMatcher = !ignorePaths.isEmpty() ? Optional.of(path -> ignorePaths.contains(requireNonNull(path)))
+					: Optional.empty();
+			return concat(foundIgnorePathsPathMatcher.stream(), pathMatchersByGlob.values().stream()).collect(toUnmodifiableSet());
+		}
+
 	}
 
 }
