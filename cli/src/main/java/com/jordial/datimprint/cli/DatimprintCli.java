@@ -16,6 +16,7 @@
 
 package com.jordial.datimprint.cli;
 
+import static com.globalmentor.collections.iterables.Iterables.*;
 import static com.globalmentor.io.Paths.*;
 import static java.nio.charset.StandardCharsets.*;
 import static java.nio.file.Files.*;
@@ -74,17 +75,21 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @param argCharset The charset for text encoding.
 	 * @param argOutput The path to a file in which to store the output.
 	 * @param argExecutorType The particular type of executor to use, if any.
+	 * @param argIgnorePaths The paths to ignore, if any.
+	 * @param argIgnoreGlobs The globs of paths to ignore, if any.
 	 * @throws IOException If an I/O error occurs.
 	 */
 	@Command(description = "Generates a data imprint of the indicated file or directory tree. The output will use the default console/system encoding unless an output file is specified. The system line separator will be used.", mixinStandardHelpOptions = true)
 	public void generate(
-			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated. Multiple data sources are allowed.", arity = "1..*") @Nonnull List<Path> argDataPaths,
+			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated. Multiple data sources are allowed.", arity = "1..*") @Nonnull final List<Path> argDataPaths,
 			@Option(names = {"--charset",
-					"-c"}, description = "The charset for text encoding.%nDefaults to UTF-8 if an output file is specified; otherwise uses the console system encoding unless redirected, in which case uses the default system encoding.") Optional<Charset> argCharset,
+					"-c"}, description = "The charset for text encoding.%nDefaults to UTF-8 if an output file is specified; otherwise uses the console system encoding unless redirected, in which case uses the default system encoding.") final Optional<Charset> argCharset,
 			@Option(names = {"--output",
-					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. The system line separator will be used.") Optional<Path> argOutput,
+					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. The system line separator will be used.") final Optional<Path> argOutput,
 			@Option(names = {
-					"--executor"}, description = "Specifies a particular executor to use for multithreading. Valid values: ${COMPLETION-CANDIDATES}") Optional<PathImprintGenerator.Builder.ExecutorType> argExecutorType)
+					"--executor"}, description = "Specifies a particular executor to use for multithreading. Valid values: ${COMPLETION-CANDIDATES}") final Optional<PathImprintGenerator.Builder.ExecutorType> argExecutorType,
+			@Option(names = "--ignore-path", description = "One or more paths to ignore.") final List<Path> argIgnorePaths,
+			@Option(names = "--ignore-glob", description = "One or more matching globs to ignore; e.g. `**.txt` to ignore all text files. Windows paths much escape path separators using `\\\\`.") final List<String> argIgnoreGlobs)
 			throws IOException {
 
 		final Logger logger = getLogger();
@@ -92,8 +97,11 @@ public class DatimprintCli extends BaseCliApplication {
 		logAppInfo();
 
 		final List<Path> dataPaths = argDataPaths.stream().map(throwingFunction(path -> path.toRealPath(NOFOLLOW_LINKS))).collect(toUnmodifiableList());
+		final FileSystem fileSystem = findFirst(dataPaths).orElseThrow(IllegalStateException::new).getFileSystem();
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
+		final List<Path> ignorePaths = argIgnorePaths != null ? argIgnorePaths : List.of();
+		final List<String> ignoreGlobs = argIgnoreGlobs != null ? argIgnoreGlobs : List.of();
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
 				.a("Generating imprint for %s ...".formatted(dataPaths.stream().map(path -> "`%s`".formatted(path)).collect(joining(", ")))).reset());
 		final Duration timeElapsed;
@@ -106,7 +114,8 @@ public class DatimprintCli extends BaseCliApplication {
 					datimSerializer.appendHeader(writer);
 					final AtomicLong counter = new AtomicLong(0);
 					final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> datimSerializer.appendImprint(writer, imprint, counter.incrementAndGet()));
-					final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer);
+					final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer)
+							.withIgnorePaths(ignorePaths).withIgnoreGlobs(fileSystem, ignoreGlobs);
 					if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 						imprintGeneratorBuilder.withListener(status);
 					}
@@ -188,9 +197,9 @@ public class DatimprintCli extends BaseCliApplication {
 	 */
 	@Command(description = "Checks the indicated file or files in the indicated directory tree against the data imprints in a file.", mixinStandardHelpOptions = true)
 	public void check(
-			@Parameters(paramLabel = "<data>", description = "The file or base directory of the file(s) to be checked.", arity = "1..*") @Nonnull Path argDataPath,
+			@Parameters(paramLabel = "<data>", description = "The file or base directory of the file(s) to be checked.", arity = "1..*") @Nonnull final Path argDataPath,
 			@Option(names = {"--imprint",
-					"-i"}, description = "The file containing imprints against which to check the data files.", required = true) Path argImprintFile)
+					"-i"}, description = "The file containing imprints against which to check the data files.", required = true) final Path argImprintFile)
 			//TODO @Option(names = {"--imprint-charset"}, description = "The charset of the imprints file. If not provided, detected from the any BOM, defaulting to UTF-8.") Optional<Charset> argImprintCharset)
 			throws IOException {
 
