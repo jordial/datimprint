@@ -254,6 +254,88 @@ public class PathImprintGeneratorIT {
 	}
 
 	/**
+	 * @see PathImprintGenerator#produceChildImprintsAsync(Path)
+	 * @see PathImprintGenerator#getExcludePathMatchers()
+	 * @see PathImprintGenerator.Builder#withExcludePath(Path)
+	 */
+	@Test
+	void verifyProduceChildImprintsAsyncIgnoresConfiguredExcludePaths(@TempDir final Path tempDir) throws IOException {
+		final Path directory = createDirectory(tempDir.resolve("foobar"));
+
+		final Path fooBinFile = writeString(directory.resolve("foo.bin"), "foo");
+		final Path exampleTxtFile = writeString(directory.resolve("example.txt"), "example");
+		final Path fooDirectory = createDirectory(directory.resolve("foo"));
+		final Path barDirectory = createDirectory(directory.resolve("bar"));
+		final Path otherTxtFile = writeString(directory.resolve("other.txt"), "other");
+		final Path barBinFile = writeString(directory.resolve("bar.bin"), "bar");
+		final Path fooBarDirectory = createDirectory(directory.resolve("foo.bar"));
+
+		//create a custom path imprint generator rather than using the test one so we can specify things to exclude
+		try (final PathImprintGenerator ignoringPathImprintGenerator = PathImprintGenerator.builder().withExecutor(Runnable::run)
+				//exclude `foo` directory and `bar.bin` file
+				.withExcludePath(fooDirectory).withExcludePath(barBinFile).build()) {
+			assertThat(ignoringPathImprintGenerator.produceChildImprintsAsync(directory).join().keySet(),
+					containsInAnyOrder(fooBinFile, exampleTxtFile, barDirectory, otherTxtFile, fooBarDirectory));
+		}
+	}
+
+	/**
+	 * @see PathImprintGenerator#produceChildImprintsAsync(Path)
+	 * @see PathImprintGenerator#getExcludePathMatchers()
+	 * @see PathImprintGenerator.Builder#withExcludePathGlob(FileSystem, String)
+	 */
+	@Test
+	void verifyProduceChildImprintsAsyncIgnoresConfiguredExcludePathGlobs(@TempDir final Path tempDir) throws IOException {
+		final Path directory = createDirectory(tempDir.resolve("foobar"));
+
+		final Path fooBinFile = writeString(directory.resolve("foo.bin"), "foo");
+		final Path exampleTxtFile = writeString(directory.resolve("example.txt"), "example");
+		final Path fooDirectory = createDirectory(directory.resolve("foo"));
+		final Path barDirectory = createDirectory(directory.resolve("bar"));
+		final Path otherTxtFile = writeString(directory.resolve("other.txt"), "other");
+		final Path barBinFile = writeString(directory.resolve("bar.bin"), "bar");
+		final Path fooBarDirectory = createDirectory(directory.resolve("foo.bar"));
+
+		//create a custom path imprint generator rather than using the test one so we can specify things to exclude
+		try (final PathImprintGenerator ignoringPathImprintGenerator = PathImprintGenerator.builder().withExecutor(Runnable::run)
+				.withExcludePathGlob(directory.getFileSystem(), "**.txt").withExcludePathGlob(directory.getFileSystem(), "**.bar").build()) { //exclude `**.txt` and `**.bar` files/directories
+			assertThat("Path globs match as expected.", ignoringPathImprintGenerator.produceChildImprintsAsync(directory).join().keySet(),
+					containsInAnyOrder(fooBinFile, fooDirectory, barDirectory, barBinFile));
+		}
+		//check that we are not storing the path globs as filename globs inadvertently
+		try (final PathImprintGenerator ignoringPathImprintGenerator = PathImprintGenerator.builder().withExecutor(Runnable::run)
+				.withExcludePathGlob(directory.getFileSystem(), "*.txt").withExcludePathGlob(directory.getFileSystem(), "*.bar").build()) {
+			assertThat("Filename globs do not match as path globs.", ignoringPathImprintGenerator.produceChildImprintsAsync(directory).join().keySet(),
+					containsInAnyOrder(fooBinFile, exampleTxtFile, fooDirectory, barDirectory, otherTxtFile, barBinFile, fooBarDirectory));
+		}
+	}
+
+	/**
+	 * @see PathImprintGenerator#produceChildImprintsAsync(Path)
+	 * @see PathImprintGenerator#getExcludePathMatchers()
+	 * @see PathImprintGenerator.Builder#withExcludeFilenameGlob(FileSystem, String)
+	 */
+	@Test
+	void verifyProduceChildImprintsAsyncIgnoresConfiguredExcludeFilenameGlobs(@TempDir final Path tempDir) throws IOException {
+		final Path directory = createDirectory(tempDir.resolve("foobar"));
+
+		final Path fooBinFile = writeString(directory.resolve("foo.bin"), "foo");
+		writeString(directory.resolve("example.txt"), "example");
+		final Path fooDirectory = createDirectory(directory.resolve("foo"));
+		final Path barDirectory = createDirectory(directory.resolve("bar"));
+		writeString(directory.resolve("example.tmp"), "other");
+		final Path barBinFile = writeString(directory.resolve("bar.bin"), "bar");
+		createDirectory(directory.resolve("foo.bar"));
+
+		//create a custom path imprint generator rather than using the test one so we can specify things to exclude
+		try (final PathImprintGenerator ignoringPathImprintGenerator = PathImprintGenerator.builder().withExecutor(Runnable::run)
+				.withExcludeFilenameGlob(directory.getFileSystem(), "example.t??").withExcludeFilenameGlob(directory.getFileSystem(), "*.bar").build()) { //exclude `*.t??` and `*.bar` files/directories
+			assertThat(ignoringPathImprintGenerator.produceChildImprintsAsync(directory).join().keySet(),
+					containsInAnyOrder(fooBinFile, fooDirectory, barDirectory, barBinFile));
+		}
+	}
+
+	/**
 	 * Verify that any child directories that are hidden and marked as DOS "system" directories are ignored. This is to prevent {@link AccessDeniedException} when
 	 * trying to access directories such as <code>System Volume Information</code> and <code>$RECYCLE.BIN</code> on Windows file systems.
 	 * @see PathImprintGenerator#produceChildImprintsAsync(Path)

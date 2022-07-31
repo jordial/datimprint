@@ -24,7 +24,9 @@ import static java.util.Objects.*;
 import static java.util.concurrent.CompletableFuture.*;
 import static java.util.concurrent.Executors.*;
 import static java.util.function.Function.*;
+import static java.util.function.Predicate.*;
 import static java.util.stream.Collectors.*;
+import static java.util.stream.Stream.*;
 import static org.zalando.fauxpas.FauxPas.*;
 
 import java.io.*;
@@ -100,6 +102,30 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		return foundListener;
 	}
 
+	private final Set<PathMatcher> excludePathMatchers;
+
+	/**
+	 * The path matchers indicating which paths to exclude. These only apply to descendant paths; they will not be checked against the root path of a tree.
+	 * @apiNote These path matchers include both literal path excludes and glob path excludes.
+	 * @return The path matchers indicating which paths to exclude.
+	 */
+	protected Set<PathMatcher> getExcludePathMatchers() {
+		return excludePathMatchers;
+	}
+
+	/**
+	 * Determines if the given path should be excluded based upon the configured excluded paths and globs.
+	 * @implNote This implementation is not the most efficient, as it will check the path against each path matcher for every descendant path. Nevertheless the
+	 *           overhead, for just a few excludes, is probably less than the I/O operations, and any alternative would require great complexity for adding
+	 *           matching shortcuts.
+	 * @param path The path to check.
+	 * @return <code>true</code> if the path matches any of the configured excluded paths or globs.
+	 * @see #getExcludePathMatchers()
+	 */
+	protected boolean isExcludedPath(@Nonnull final Path path) {
+		return getExcludePathMatchers().stream().anyMatch(pathMatcher -> pathMatcher.matches(path));
+	}
+
 	/**
 	 * No-args constructor.
 	 * @implSpec Traversal and imprint generation uses a thread pool that by default has the same number of threads as the number of available processors.
@@ -145,6 +171,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		this.produceExecutor = requireNonNull(produceExecutor);
 		this.foundImprintConsumer = Optional.empty();
 		this.foundListener = Optional.empty();
+		this.excludePathMatchers = Set.of();
 	}
 
 	/**
@@ -161,6 +188,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		this.produceExecutor = requireNonNull(produceExecutor);
 		this.foundImprintConsumer = Optional.of(imprintConsumer);
 		this.foundListener = Optional.empty();
+		this.excludePathMatchers = Set.of();
 	}
 
 	/**
@@ -172,6 +200,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		this.produceExecutor = builder.determineProduceExecutor();
 		this.foundImprintConsumer = builder.findImprintConsumer();
 		this.foundListener = builder.findListener();
+		this.excludePathMatchers = builder.determineExcludePathMatchers();
 	}
 
 	/** @return A new builder for specifying a new {@link PathImprintGenerator}. */
@@ -303,6 +332,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @implSpec This implementation delegates to {@link #produceImprintAsync(Path)} to produce each child imprint.
 	 * @implSpec Any child directories that are hidden and marked as DOS "system" directories are ignored. This is to prevent {@link AccessDeniedException} when
 	 *           trying to access directories such as <code>System Volume Information</code> and <code>$RECYCLE.BIN</code> on Windows file systems.
+	 * @implSpec This implementation ignores any configured exclude paths and/or globs determined by calling {@link #isExcludedPath(Path)}.
 	 * @implNote The approach used in this method to detect hidden directories only works from Java 13 onwards because of bug
 	 *           <a href="https://bugs.openjdk.org/browse/JDK-8215467">JDK-8215467</a>.
 	 * @param directory The path for which an imprint should be produced.
@@ -323,7 +353,8 @@ public class PathImprintGenerator implements Closeable, Clogged {
 						}
 					}
 					return true;
-				})).collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
+				})).filter(not(this::isExcludedPath)) //ignore configured exclude paths/globs
+						.collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
 			}
 		}), getGenerateExecutor());
 	}
@@ -340,9 +371,11 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	CompletableFuture<Hash> generateFileContentFingerprintAsync(@Nonnull final Path file) throws IOException {
 		return supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.beforeGenerateFileContentFingerprint(file));
-			final Hash fingerprint = FINGERPRINT_ALGORITHM.hash(file);
-			findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
-			return fingerprint;
+			try {
+				return FINGERPRINT_ALGORITHM.hash(file); //TODO find a way to get errors such as java.nio.file.FileSystemException (e.g. in use by another file) back to application quicker
+			} finally { //even if there was an error, at least note we're finished generating the file content fingerprint
+				findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
+			}
 		}), getGenerateExecutor());
 	}
 
@@ -618,6 +651,109 @@ public class PathImprintGenerator implements Closeable, Clogged {
 				return thread;
 			});
 		}
+
+		private Set<Path> excludePaths = new HashSet<>();
+
+		/**
+		 * Specifies a single path to exclude.
+		 * @param excludePath A path to exclude; might not exist.
+		 * @return This builder.
+		 */
+		public Builder withExcludePath(@Nonnull final Path excludePath) {
+			this.excludePaths.add(excludePath);
+			return this;
+		}
+
+		/**
+		 * Specifies paths to exclude.
+		 * @param excludePaths Paths to exclude; each path might not exist.
+		 * @return This builder.
+		 */
+		public Builder withExcludePaths(@Nonnull final Collection<Path> excludePaths) {
+			excludePaths.forEach(this::withExcludePath);
+			return this;
+		}
+
+		private Map<String, PathMatcher> excludePathMatchersByPathGlob = new HashMap<>();
+
+		/**
+		 * Specifies a single path glob to exclude. If the same glob has been specified with the same or other file system, the previous glob will be discarded.
+		 * @param fileSystem The file system for which the glob should be valid.
+		 * @param excludePathGlob A path glob to exclude.
+		 * @return This builder.
+		 * @throws IllegalArgumentException if the glob does not have the correct syntax.
+		 */
+		public Builder withExcludePathGlob(@Nonnull final FileSystem fileSystem, @Nonnull final String excludePathGlob) {
+			excludePathMatchersByPathGlob.put(excludePathGlob, fileSystem.getPathMatcher("glob:" + requireNonNull(excludePathGlob)));
+			return this;
+		}
+
+		/**
+		 * Specifies path globs to exclude. If any glob has been specified with another file system, the previous glob will be discarded.
+		 * @param fileSystem The file system for which the glob should be valid.
+		 * @param excludePathGlobs The path globs to exclude
+		 * @return This builder.
+		 * @throws IllegalArgumentException if a glob does not have the correct syntax.
+		 */
+		public Builder withExcludePathGlobs(@Nonnull final FileSystem fileSystem, @Nonnull final Collection<String> excludePathGlobs) {
+			excludePathGlobs.forEach(excludePathGlob -> withExcludePathGlob(fileSystem, excludePathGlob));
+			return this;
+		}
+
+		private Map<String, PathMatcher> excludePathMatchersByFilenameGlob = new HashMap<>();
+
+		/**
+		 * Specifies a single filename glob to exclude. If the same glob has been specified with the same or other file system, the previous glob will be discarded.
+		 * @param fileSystem The file system for which the glob should be valid.
+		 * @param excludeFilenameGlob A filename glob to exclude.
+		 * @return This builder.
+		 * @throws IllegalArgumentException if the glob does not have the correct syntax.
+		 */
+		public Builder withExcludeFilenameGlob(@Nonnull final FileSystem fileSystem, @Nonnull final String excludeFilenameGlob) {
+			excludePathMatchersByFilenameGlob.put(excludeFilenameGlob, fileSystem.getPathMatcher("glob:" + requireNonNull(excludeFilenameGlob)));
+			return this;
+		}
+
+		/**
+		 * Specifies filename globs to exclude. If any glob has been specified with another file system, the previous glob will be discarded.
+		 * @param fileSystem The file system for which the glob should be valid.
+		 * @param excludeFilenameGlobs The filename globs to exclude
+		 * @return This builder.
+		 * @throws IllegalArgumentException if a glob does not have the correct syntax.
+		 */
+		public Builder withExcludeFilenameGlobs(@Nonnull final FileSystem fileSystem, @Nonnull final Collection<String> excludeFilenameGlobs) {
+			excludeFilenameGlobs.forEach(excludePathGlob -> withExcludeFilenameGlob(fileSystem, excludePathGlob));
+			return this;
+		}
+
+		/**
+		 * @return A set of path matchers including all the specified exclude paths, path globs, and filename globs.
+		 * @see #withExcludePath(Path)
+		 * @see #withExcludePathGlob(FileSystem, String)
+		 * @see #withExcludeFilenameGlobs(FileSystem, Collection)
+		 */
+		private Set<PathMatcher> determineExcludePathMatchers() {
+			final Set<Path> excludePaths = Set.copyOf(this.excludePaths);
+			//if we have any exclude paths, create a custom PathMatcher to match against them all
+			final Optional<PathMatcher> foundExcludePathsPathMatcher = !excludePaths.isEmpty() ? Optional.of(path -> excludePaths.contains(requireNonNull(path)))
+					: Optional.empty();
+			//adapt the filename globs to work with paths
+			final Stream<PathMatcher> excludeFilenameGlobPathMatchers = excludePathMatchersByFilenameGlob.values().stream().map(pathMatcher -> {
+				return new PathMatcher() {
+					@Override
+					public boolean matches(final Path path) {
+						final Path filenamePath = path.getFileName();
+						if(filenamePath == null) {
+							return false;
+						}
+						return pathMatcher.matches(filenamePath);
+					}
+				};
+			});
+			return concat(foundExcludePathsPathMatcher.stream(), concat(excludePathMatchersByPathGlob.values().stream(), excludeFilenameGlobPathMatchers))
+					.collect(toUnmodifiableSet());
+		}
+
 	}
 
 }
