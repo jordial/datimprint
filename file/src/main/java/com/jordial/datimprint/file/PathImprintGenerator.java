@@ -102,28 +102,28 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		return foundListener;
 	}
 
-	private final Set<PathMatcher> ignorePathMatchers;
+	private final Set<PathMatcher> excludePathMatchers;
 
 	/**
-	 * The path matchers indicating which paths to ignore. These only apply to descendant paths; they will not be checked against the root path of a tree.
-	 * @apiNote These path matchers include both literal path ignores and glob path ignores.
-	 * @return The path matchers indicating which paths to ignore.
+	 * The path matchers indicating which paths to exclude. These only apply to descendant paths; they will not be checked against the root path of a tree.
+	 * @apiNote These path matchers include both literal path excludes and glob path excludes.
+	 * @return The path matchers indicating which paths to exclude.
 	 */
-	protected Set<PathMatcher> getIgnorePathMatchers() {
-		return ignorePathMatchers;
+	protected Set<PathMatcher> getExcludePathMatchers() {
+		return excludePathMatchers;
 	}
 
 	/**
-	 * Determines if the given path should be ignored based upon the configured ignored paths and globs.
+	 * Determines if the given path should be excluded based upon the configured excluded paths and globs.
 	 * @implNote This implementation is not the most efficient, as it will check the path against each path matcher for every descendant path. Nevertheless the
-	 *           overhead, for just a few ignores, is probably less than the I/O operations, and any alternative would require great complexity for adding
+	 *           overhead, for just a few excludes, is probably less than the I/O operations, and any alternative would require great complexity for adding
 	 *           matching shortcuts.
 	 * @param path The path to check.
-	 * @return <code>true</code> if the path matches any of the configured ignored paths or globs.
-	 * @see #getIgnorePathMatchers()
+	 * @return <code>true</code> if the path matches any of the configured excluded paths or globs.
+	 * @see #getExcludePathMatchers()
 	 */
-	protected boolean isIgnoredPath(@Nonnull final Path path) {
-		return getIgnorePathMatchers().stream().anyMatch(pathMatcher -> pathMatcher.matches(path));
+	protected boolean isExcludedPath(@Nonnull final Path path) {
+		return getExcludePathMatchers().stream().anyMatch(pathMatcher -> pathMatcher.matches(path));
 	}
 
 	/**
@@ -171,7 +171,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		this.produceExecutor = requireNonNull(produceExecutor);
 		this.foundImprintConsumer = Optional.empty();
 		this.foundListener = Optional.empty();
-		this.ignorePathMatchers = Set.of();
+		this.excludePathMatchers = Set.of();
 	}
 
 	/**
@@ -188,7 +188,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		this.produceExecutor = requireNonNull(produceExecutor);
 		this.foundImprintConsumer = Optional.of(imprintConsumer);
 		this.foundListener = Optional.empty();
-		this.ignorePathMatchers = Set.of();
+		this.excludePathMatchers = Set.of();
 	}
 
 	/**
@@ -200,7 +200,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		this.produceExecutor = builder.determineProduceExecutor();
 		this.foundImprintConsumer = builder.findImprintConsumer();
 		this.foundListener = builder.findListener();
-		this.ignorePathMatchers = builder.determineIgnorePathMatchers();
+		this.excludePathMatchers = builder.determineExcludePathMatchers();
 	}
 
 	/** @return A new builder for specifying a new {@link PathImprintGenerator}. */
@@ -332,7 +332,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @implSpec This implementation delegates to {@link #produceImprintAsync(Path)} to produce each child imprint.
 	 * @implSpec Any child directories that are hidden and marked as DOS "system" directories are ignored. This is to prevent {@link AccessDeniedException} when
 	 *           trying to access directories such as <code>System Volume Information</code> and <code>$RECYCLE.BIN</code> on Windows file systems.
-	 * @implSpec This implementation ignores any configured paths and/or globs by calling {@link #isIgnoredPath(Path)}.
+	 * @implSpec This implementation ignores any configured exclude paths and/or globs determined by calling {@link #isExcludedPath(Path)}.
 	 * @implNote The approach used in this method to detect hidden directories only works from Java 13 onwards because of bug
 	 *           <a href="https://bugs.openjdk.org/browse/JDK-8215467">JDK-8215467</a>.
 	 * @param directory The path for which an imprint should be produced.
@@ -353,7 +353,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 						}
 					}
 					return true;
-				})).filter(not(this::isIgnoredPath)) //ignore configured paths/globs
+				})).filter(not(this::isExcludedPath)) //ignore configured exclude paths/globs
 						.collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
 			}
 		}), getGenerateExecutor());
@@ -652,64 +652,106 @@ public class PathImprintGenerator implements Closeable, Clogged {
 			});
 		}
 
-		private Set<Path> ignorePaths = new HashSet<>();
+		private Set<Path> excludePaths = new HashSet<>();
 
 		/**
-		 * Specifies a single path to ignore.
-		 * @param ignorePath A path to ignore; might not exist.
+		 * Specifies a single path to exclude.
+		 * @param excludePath A path to exclude; might not exist.
 		 * @return This builder.
 		 */
-		public Builder withIgnorePath(@Nonnull final Path ignorePath) {
-			this.ignorePaths.add(ignorePath);
+		public Builder withExcludePath(@Nonnull final Path excludePath) {
+			this.excludePaths.add(excludePath);
 			return this;
 		}
 
 		/**
-		 * Specifies paths to ignore.
-		 * @param ignorePaths Paths to ignore; each path might not exist.
+		 * Specifies paths to exclude.
+		 * @param excludePaths Paths to exclude; each path might not exist.
 		 * @return This builder.
 		 */
-		public Builder withIgnorePaths(@Nonnull final Collection<Path> ignorePaths) {
-			this.ignorePaths.addAll(ignorePaths);
+		public Builder withExcludePaths(@Nonnull final Collection<Path> excludePaths) {
+			excludePaths.forEach(this::withExcludePath);
 			return this;
 		}
 
-		private Map<String, PathMatcher> pathMatchersByGlob = new HashMap<>();
+		private Map<String, PathMatcher> excludePathMatchersByPathGlob = new HashMap<>();
 
 		/**
-		 * Specifies a single glob to ignore. If the same glob has been specified with another file system, the previous glob will be discarded.
+		 * Specifies a single path glob to exclude. If the same glob has been specified with the same or other file system, the previous glob will be discarded.
 		 * @param fileSystem The file system for which the glob should be valid.
-		 * @param ignoreGlob A glob to ignore.
+		 * @param excludePathGlob A path glob to exclude.
 		 * @return This builder.
 		 * @throws IllegalArgumentException if the glob does not have the correct syntax.
 		 */
-		public Builder withIgnoreGlob(@Nonnull final FileSystem fileSystem, @Nonnull final String ignoreGlob) {
-			pathMatchersByGlob.put(ignoreGlob, fileSystem.getPathMatcher("glob:" + requireNonNull(ignoreGlob)));
+		public Builder withExcludePathGlob(@Nonnull final FileSystem fileSystem, @Nonnull final String excludePathGlob) {
+			excludePathMatchersByPathGlob.put(excludePathGlob, fileSystem.getPathMatcher("glob:" + requireNonNull(excludePathGlob)));
 			return this;
 		}
 
 		/**
-		 * Specifies globs to ignore. If any glob has been specified with another file system, the previous glob will be discarded.
+		 * Specifies path globs to exclude. If any glob has been specified with another file system, the previous glob will be discarded.
 		 * @param fileSystem The file system for which the glob should be valid.
-		 * @param ignoreGlobs The globs to ignore
+		 * @param excludePathGlobs The path globs to exclude
 		 * @return This builder.
 		 * @throws IllegalArgumentException if a glob does not have the correct syntax.
 		 */
-		public Builder withIgnoreGlobs(@Nonnull final FileSystem fileSystem, @Nonnull final Collection<String> ignoreGlobs) {
-			ignoreGlobs.forEach(ignoreGlob -> withIgnoreGlob(fileSystem, ignoreGlob));
+		public Builder withExcludePathGlobs(@Nonnull final FileSystem fileSystem, @Nonnull final Collection<String> excludePathGlobs) {
+			excludePathGlobs.forEach(excludePathGlob -> withExcludePathGlob(fileSystem, excludePathGlob));
+			return this;
+		}
+
+		private Map<String, PathMatcher> excludePathMatchersByFilenameGlob = new HashMap<>();
+
+		/**
+		 * Specifies a single filename glob to exclude. If the same glob has been specified with the same or other file system, the previous glob will be discarded.
+		 * @param fileSystem The file system for which the glob should be valid.
+		 * @param excludeFilenameGlob A filename glob to exclude.
+		 * @return This builder.
+		 * @throws IllegalArgumentException if the glob does not have the correct syntax.
+		 */
+		public Builder withExcludeFilenameGlob(@Nonnull final FileSystem fileSystem, @Nonnull final String excludeFilenameGlob) {
+			excludePathMatchersByFilenameGlob.put(excludeFilenameGlob, fileSystem.getPathMatcher("glob:" + requireNonNull(excludeFilenameGlob)));
 			return this;
 		}
 
 		/**
-		 * @return A set of path matchers including all the specified ignore paths and globs.
-		 * @see #withIgnorePath(Path)
-		 * @see #withIgnoreGlob(FileSystem, String)
+		 * Specifies filename globs to exclude. If any glob has been specified with another file system, the previous glob will be discarded.
+		 * @param fileSystem The file system for which the glob should be valid.
+		 * @param excludeFilenameGlobs The filename globs to exclude
+		 * @return This builder.
+		 * @throws IllegalArgumentException if a glob does not have the correct syntax.
 		 */
-		private Set<PathMatcher> determineIgnorePathMatchers() {
-			//if we have any ignore paths, create a custom PathMatcher to match against them all
-			final Optional<PathMatcher> foundIgnorePathsPathMatcher = !ignorePaths.isEmpty() ? Optional.of(path -> ignorePaths.contains(requireNonNull(path)))
+		public Builder withExcludeFilenameGlobs(@Nonnull final FileSystem fileSystem, @Nonnull final Collection<String> excludeFilenameGlobs) {
+			excludeFilenameGlobs.forEach(excludePathGlob -> withExcludeFilenameGlob(fileSystem, excludePathGlob));
+			return this;
+		}
+
+		/**
+		 * @return A set of path matchers including all the specified exclude paths, path globs, and filename globs.
+		 * @see #withExcludePath(Path)
+		 * @see #withExcludePathGlob(FileSystem, String)
+		 * @see #withExcludeFilenameGlobs(FileSystem, Collection)
+		 */
+		private Set<PathMatcher> determineExcludePathMatchers() {
+			final Set<Path> excludePaths = Set.copyOf(this.excludePaths);
+			//if we have any exclude paths, create a custom PathMatcher to match against them all
+			final Optional<PathMatcher> foundExcludePathsPathMatcher = !excludePaths.isEmpty() ? Optional.of(path -> excludePaths.contains(requireNonNull(path)))
 					: Optional.empty();
-			return concat(foundIgnorePathsPathMatcher.stream(), pathMatchersByGlob.values().stream()).collect(toUnmodifiableSet());
+			//adapt the filename globs to work with paths
+			final Stream<PathMatcher> excludeFilenameGlobPathMatchers = excludePathMatchersByFilenameGlob.values().stream().map(pathMatcher -> {
+				return new PathMatcher() {
+					@Override
+					public boolean matches(final Path path) {
+						final Path filenamePath = path.getFileName();
+						if(filenamePath == null) {
+							return false;
+						}
+						return pathMatcher.matches(filenamePath);
+					}
+				};
+			});
+			return concat(foundExcludePathsPathMatcher.stream(), concat(excludePathMatchersByPathGlob.values().stream(), excludeFilenameGlobPathMatchers))
+					.collect(toUnmodifiableSet());
 		}
 
 	}

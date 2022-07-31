@@ -75,8 +75,9 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @param argCharset The charset for text encoding.
 	 * @param argOutput The path to a file in which to store the output.
 	 * @param argExecutorType The particular type of executor to use, if any.
-	 * @param argIgnorePaths The paths to ignore, if any.
-	 * @param argIgnoreGlobs The globs of paths to ignore, if any.
+	 * @param argExcludePaths The literal paths to exclude, if any.
+	 * @param argExcludePathGlobs The globs of paths to exclude, if any.
+	 * @param argExcludeFilenameGlobs The globs of filenames to exclude, if any.
 	 * @throws IOException If an I/O error occurs.
 	 */
 	@Command(description = "Generates a data imprint of the indicated file or directory tree. The output will use the default console/system encoding unless an output file is specified. The system line separator will be used.", mixinStandardHelpOptions = true)
@@ -88,8 +89,9 @@ public class DatimprintCli extends BaseCliApplication {
 					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. The system line separator will be used.") final Optional<Path> argOutput,
 			@Option(names = {
 					"--executor"}, description = "Specifies a particular executor to use for multithreading. Valid values: ${COMPLETION-CANDIDATES}") final Optional<PathImprintGenerator.Builder.ExecutorType> argExecutorType,
-			@Option(names = "--ignore-path", description = "One or more paths to ignore.") final List<Path> argIgnorePaths,
-			@Option(names = "--ignore-glob", description = "One or more matching globs to ignore; e.g. `**.txt` to ignore all text files. Windows paths much escape path separators using `\\\\`.") final List<String> argIgnoreGlobs)
+			@Option(names = "--exclude-path", description = "One or more literal paths to exclude.") final List<Path> argExcludePaths,
+			@Option(names = "--exclude-path-glob", description = "One or more matching globs of paths to exclude; e.g. `**.txt` to exclude all text files. Windows paths much escape path separators using `\\\\`.%nMust be quoted on Linux or via OpenJDK `java -jar`.") final List<String> argExcludePathGlobs,
+			@Option(names = "--exclude-filename-glob", description = "One or more matching globs of filenames to exclude; e.g. `*.t?t` to exclude all text and test files.%nMust be quoted on Linux or via OpenJDK `java -jar`.") final List<String> argExcludeFilenameGlobs)
 			throws IOException {
 
 		final Logger logger = getLogger();
@@ -100,8 +102,9 @@ public class DatimprintCli extends BaseCliApplication {
 		final FileSystem fileSystem = findFirst(dataPaths).orElseThrow(IllegalStateException::new).getFileSystem();
 		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
 				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
-		final List<Path> ignorePaths = argIgnorePaths != null ? argIgnorePaths : List.of();
-		final List<String> ignoreGlobs = argIgnoreGlobs != null ? argIgnoreGlobs : List.of();
+		final List<Path> excludePaths = argExcludePaths != null ? argExcludePaths : List.of();
+		final List<String> excludePathGlobs = argExcludePathGlobs != null ? argExcludePathGlobs : List.of();
+		final List<String> excludeFilenameGlobs = argExcludeFilenameGlobs != null ? argExcludeFilenameGlobs : List.of();
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
 				.a("Generating imprint for %s ...".formatted(dataPaths.stream().map(path -> "`%s`".formatted(path)).collect(joining(", ")))).reset());
 		final Duration timeElapsed;
@@ -115,7 +118,7 @@ public class DatimprintCli extends BaseCliApplication {
 					final AtomicLong counter = new AtomicLong(0);
 					final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> datimSerializer.appendImprint(writer, imprint, counter.incrementAndGet()));
 					final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer)
-							.withIgnorePaths(ignorePaths).withIgnoreGlobs(fileSystem, ignoreGlobs);
+							.withExcludePaths(excludePaths).withExcludePathGlobs(fileSystem, excludePathGlobs).withExcludeFilenameGlobs(fileSystem, excludeFilenameGlobs);
 					if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 						imprintGeneratorBuilder.withListener(status);
 					}
