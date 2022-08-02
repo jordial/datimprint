@@ -24,7 +24,6 @@ import static java.util.Objects.*;
 import static java.util.concurrent.CompletableFuture.*;
 import static java.util.concurrent.Executors.*;
 import static java.util.function.Function.*;
-import static java.util.function.Predicate.*;
 import static java.util.stream.Collectors.*;
 import static java.util.stream.Stream.*;
 import static org.zalando.fauxpas.FauxPas.*;
@@ -321,7 +320,8 @@ public class PathImprintGenerator implements Closeable, Clogged {
 
 	/**
 	 * Asynchronously generates imprints for all immediate children of a directory. Because child imprint fingerprints are formed from the imprints of their own
-	 * children, this method ultimately includes asynchronous recursion to all the descendants of the directory.
+	 * children, this method ultimately includes asynchronous recursion to all the descendants of the directory. Children that are not readable are skipped,
+	 * reported to {@link Listener#onSkipUnreadablePath(Path)}. Excluded paths are also skipped, reported to {@link Listener#onSkipExcludedPath(Path)}.
 	 * @apiNote Perhaps a more modularized approach would be to separate generation from production. However generation of each direct child must include
 	 *          production of the second level and below via the ultimate calls to {@link #generateDirectoryContentChildrenFingerprintsAsync(Path)} (otherwise the
 	 *          caller would have no way to produce the imprint of subsequent levels). It is more consistent to schedule production of the immediate children
@@ -330,11 +330,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 *          of children more quickly, freeing resources for other children without needing to wait until the directory listing is finished.
 	 * @implSpec This implementation uses the executor returned by {@link #getGenerateExecutor()} for traversal.
 	 * @implSpec This implementation delegates to {@link #produceImprintAsync(Path)} to produce each child imprint.
-	 * @implSpec Any child directories that are hidden and marked as DOS "system" directories are ignored. This is to prevent {@link AccessDeniedException} when
-	 *           trying to access directories such as <code>System Volume Information</code> and <code>$RECYCLE.BIN</code> on Windows file systems.
 	 * @implSpec This implementation ignores any configured exclude paths and/or globs determined by calling {@link #isExcludedPath(Path)}.
-	 * @implNote The approach used in this method to detect hidden directories only works from Java 13 onwards because of bug
-	 *           <a href="https://bugs.openjdk.org/browse/JDK-8215467">JDK-8215467</a>.
 	 * @param directory The path for which an imprint should be produced.
 	 * @return A map of all future imprints for each child mapped to the path of each child.
 	 * @throws IOException if there is a problem traversing the directory or reading file contents.
@@ -343,18 +339,19 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		return supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.onEnterDirectory(directory));
 			try (final Stream<Path> childPaths = list(directory)) {
-				return childPaths.filter(throwingPredicate(childPath -> { //ignore hidden+system directories
-					if(isDirectory(childPath) && isHidden(childPath)) { //isHidden() only works for directories from Java 13 onwards; see JDK-8215467
-						try {
-							final DosFileAttributes dosFileAttributes = readAttributes(childPath, DosFileAttributes.class);
-							return !dosFileAttributes.isSystem(); //only hidden+system directories are ignored
-						} catch(final UnsupportedOperationException unsupportedOperationException) {
-							//not an error condition; simply don't filter out the hidden directory if it isn't on a DOS file system
-						}
+				return childPaths.filter(throwingPredicate(childPath -> { //skip unreadable paths
+					if(!isReadable(childPath)) {
+						findListener().ifPresent(listener -> listener.onSkipUnreadablePath(childPath));
+						return false;
 					}
 					return true;
-				})).filter(not(this::isExcludedPath)) //ignore configured exclude paths/globs
-						.collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
+				})).filter(childPath -> { //skip excluded paths
+					if(isExcludedPath(childPath)) {
+						findListener().ifPresent(listener -> listener.onSkipExcludedPath(childPath));
+						return false;
+					}
+					return true;
+				}).collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
 			}
 		}), getGenerateExecutor());
 	}
@@ -372,7 +369,7 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		return supplyAsync(throwingSupplier(() -> {
 			findListener().ifPresent(listener -> listener.beforeGenerateFileContentFingerprint(file));
 			try {
-				return FINGERPRINT_ALGORITHM.hash(file); //TODO find a way to get errors such as java.nio.file.FileSystemException (e.g. in use by another file) back to application quicker
+				return FINGERPRINT_ALGORITHM.hash(file);
 			} finally { //even if there was an error, at least note we're finished generating the file content fingerprint
 				findListener().ifPresent(listener -> listener.afterGenerateFileContentFingerprint(file));
 			}
@@ -450,6 +447,20 @@ public class PathImprintGenerator implements Closeable, Clogged {
 		 * @param directory The directory entered.
 		 */
 		void onEnterDirectory(@Nonnull Path directory);
+
+		/**
+		 * Called when an unreadable path is encountered and skipped, such as <code>System Volume Information</code> directories on Windows file systems or files
+		 * with exclusive access by another process.
+		 * @param path The directory entered.
+		 */
+		void onSkipUnreadablePath(@Nonnull Path path);
+
+		/**
+		 * Called when a path is being skipped because it has been marked as excluded.
+		 * @param path The directory entered.
+		 * @see PathImprintGenerator#getExcludePathMatchers()
+		 */
+		void onSkipExcludedPath(@Nonnull Path path);
 
 		/**
 		 * Called immediately before fingerprint generation begins for the contents of a particular file.
