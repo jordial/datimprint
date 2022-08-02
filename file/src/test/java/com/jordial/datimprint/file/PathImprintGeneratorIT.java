@@ -336,38 +336,34 @@ public class PathImprintGeneratorIT {
 	}
 
 	/**
-	 * Verify that any child directories that are hidden and marked as DOS "system" directories are ignored. This is to prevent {@link AccessDeniedException} when
-	 * trying to access directories such as <code>System Volume Information</code> and <code>$RECYCLE.BIN</code> on Windows file systems.
+	 * Verify that any unreadable child files and directories are skipped. This is to prevent {@link AccessDeniedException} when trying to access files locked for
+	 * access by other processes.
+	 * @implNote The skipping mechanism originally skipped child directories that are hidden and marked as DOS "system" directories are ignored, in order to
+	 *           prevent prevent {@link AccessDeniedException} when trying to access directories such as <code>System Volume Information</code> and
+	 *           <code>$RECYCLE.BIN</code> on Windows file systems. The skipping logic has been changed to rely on {@link Files#isReadable(Path)}, rather than
+	 *           hidden+system attributes. It is currently unknown how to set up tests that return <code>false</code> for {@link Files#isReadable(Path)} for
+	 *           directories. This would be possible using Mockito static mocking, but it would make the tests brittle, relying on specific
+	 *           PathImprintGenerator#produceChildImprintsAsync(Path) in addition to {@link Files#isReadable(Path)}. Therefore this implementation only verifies
+	 *           behavior for unreadable files, not directories, assuming that by extension the code will handle unreadable directories
+	 *           <code>System Volume Information</code> and <code>$RECYCLE.BIN</code> on Windows file systems.
 	 * @see PathImprintGenerator#produceChildImprintsAsync(Path)
+	 * @see Files#isReadable(Path)
+	 * @see <a href="https://stackoverflow.com/q/73199975">How to make create a path in Java for which isReadable(path) returns false?</a>
 	 */
 	@Test
-	@EnabledOnOs({OS.WINDOWS})
-	void verifyProduceChildImprintsAsyncIgnoresDosHiddenSystemDirectories(@TempDir final Path tempDir) throws IOException {
+	@EnabledOnOs(value = OS.WINDOWS, disabledReason = "Setting paths to be non-readable via ACL file attribute view has only been tested on Windows.")
+	void verifyProduceChildImprintsAsyncSkipsUnreadableFiles(@TempDir final Path tempDir) throws IOException {
 		final Path directory = createDirectory(tempDir.resolve("dir"));
 		assumeThat("We assume that on Windows the file system uses DOS attributes; otherwise this test will not work.",
-				readAttributes(directory, BasicFileAttributes.class), isA(DosFileAttributes.class));
+				getFileAttributeView(directory, AclFileAttributeView.class), is(not(nullValue())));
 
 		final Path fooFile = writeString(directory.resolve("foo.txt"), "foo");
-		final Path hiddenFile = writeString(directory.resolve("hidden.txt"), "hidden");
-		setAttribute(hiddenFile, "dos:hidden", true);
-		final Path systemFile = writeString(directory.resolve("system.txt"), "system");
-		setAttribute(systemFile, "dos:system", true);
-		final Path hiddenSystemFile = writeString(directory.resolve("hidden-system.txt"), "hidden,system");
-		setAttribute(hiddenSystemFile, "dos:hidden", true);
-		setAttribute(hiddenSystemFile, "dos:system", true);
-		final Path fooDirectory = createDirectory(directory.resolve("foo"));
-		final Path hiddenDirectory = createDirectory(directory.resolve("hidden"));
-		setAttribute(hiddenDirectory, "dos:hidden", true);
-		final Path systemDirectory = createDirectory(directory.resolve("system"));
-		setAttribute(systemDirectory, "dos:system", true);
-		final Path hiddenSystemDirectory = createDirectory(directory.resolve("hidden-system"));
-		setAttribute(hiddenSystemDirectory, "dos:hidden", true);
-		setAttribute(hiddenSystemDirectory, "dos:system", true);
+		final Path unreadableFile = writeString(directory.resolve("locked.txt"), "locked");
+		getFileAttributeView(unreadableFile, AclFileAttributeView.class).setAcl(List.of()); //set unreadable by removing ACLs
 		final Path barFile = writeString(directory.resolve("bar.txt"), "bar");
 		final Path barDirectory = createDirectory(directory.resolve("bar"));
-
-		assertThat(testImprintGenerator.produceChildImprintsAsync(directory).join().keySet(), //should contain all children except hidden+system directory
-				containsInAnyOrder(fooFile, barFile, hiddenFile, systemFile, hiddenSystemFile, fooDirectory, barDirectory, hiddenDirectory, systemDirectory));
+		assertThat(testImprintGenerator.produceChildImprintsAsync(directory).join().keySet(), //should contain all children except unreadable paths
+				containsInAnyOrder(fooFile, barFile, barDirectory));
 	}
 
 	/** @see PathImprintGenerator#generateImprintAsync(Path) */

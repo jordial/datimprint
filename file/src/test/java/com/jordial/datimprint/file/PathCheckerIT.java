@@ -182,7 +182,7 @@ public class PathCheckerIT {
 	 * @see <a href="https://docs.microsoft.com/en-us/windows/wsl/case-sensitivity">Adjust case sensitivity</a>
 	 */
 	@Test
-	@EnabledOnOs({OS.WINDOWS})
+	@EnabledOnOs(value = OS.WINDOWS, disabledReason = "Non-Windows systems use case-sensitive file systems.")
 	void testFileResultFilenameMismatch(@TempDir final Path tempDir) throws IOException {
 		final Path file = writeString(tempDir.resolve("foo.bar"), "foobar");
 		assumeThat("In addition to Windows OS we require DOS file attributes as one proxy for determining if the file system is case-insensitive.",

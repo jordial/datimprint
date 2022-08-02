@@ -29,6 +29,7 @@ import static org.zalando.fauxpas.FauxPas.*;
 import java.io.*;
 import java.nio.charset.*;
 import java.nio.file.*;
+import java.nio.file.attribute.DosFileAttributes;
 import java.time.Duration;
 import java.util.function.Consumer;
 import java.util.*;
@@ -176,6 +177,39 @@ public class DatimprintCli extends BaseCliApplication {
 			if(isVerbose()) {
 				printLineAsync(directory.toString());
 			}
+		}
+
+		/**
+		 * {@inheritDoc}
+		 * @implSpec This implementation prints a warning for all unreadable paths unless the hidden and system attributes are both set. This prevents unnecessary
+		 *           warnings for paths expected to throw {@link AccessDeniedException} errors such as <code>System Volume Information</code> and
+		 *           <code>$RECYCLE.BIN</code> on Windows file systems.
+		 * @implNote The approach used in this method to detect hidden directories only works from Java 13 onwards because of bug
+		 *           <a href="https://bugs.openjdk.org/browse/JDK-8215467">JDK-8215467</a>.
+		 */
+		@Override
+		public void onSkipUnreadablePath(final Path path) {
+			try {
+				if(isHidden(path)) { //isHidden() only works for directories from Java 13 onwards; see JDK-8215467
+					try {
+						final DosFileAttributes dosFileAttributes = readAttributes(path, DosFileAttributes.class);
+						if(dosFileAttributes.isSystem()) { //only hidden+system directories are ignored
+							return; //don't warn for DOS hidden+system paths
+						}
+					} catch(final UnsupportedOperationException unsupportedOperationException) {
+						//not an error condition; simply continue and warn about the hidden path if it isn't on a DOS file system and thus not marked "system"
+					}
+				}
+				getLogger().warn("Skipping unreadable path `{}`.", path);
+			} catch(final FileNotFoundException fileNotFoundException) {
+				getLogger().warn("Inaccessible path `{}` suddenly disappeared.", path);
+			} catch(final IOException ioException) {
+				throw new UncheckedIOException(ioException);
+			}
+		}
+
+		@Override
+		public void onSkipExcludedPath(Path path) {
 		}
 
 		@Override
