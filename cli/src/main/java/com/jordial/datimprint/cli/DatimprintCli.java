@@ -200,7 +200,7 @@ public class DatimprintCli extends BaseCliApplication {
 						//not an error condition; simply continue and warn about the hidden path if it isn't on a DOS file system and thus not marked "system"
 					}
 				}
-				getLogger().warn("Skipping unreadable path `{}`.", path);
+				warnAsync(getLogger(), "Skipping unreadable path `{}`.", path);
 			} catch(final FileNotFoundException fileNotFoundException) {
 				getLogger().warn("Inaccessible path `{}` suddenly disappeared.", path);
 			} catch(final IOException ioException) {
@@ -355,7 +355,7 @@ public class DatimprintCli extends BaseCliApplication {
 			final CharSequence pathLabel = constrainLabelLength(result.getPath().toString(), WORK_MAX_LABEL_LENGTH);
 			final String notificationText = result instanceof PathChecker.MissingPathResult ? "Missing path `%s` for imprint.".formatted(pathLabel)
 					: "Path `%s` does not match imprint.".formatted(pathLabel);
-			notify(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
+			setNotificationAsync(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
 		}
 
 	}
