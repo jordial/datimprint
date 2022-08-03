@@ -43,6 +43,7 @@ import org.slf4j.Logger;
 import org.slf4j.event.Level;
 
 import com.globalmentor.application.*;
+import com.globalmentor.io.*;
 import com.jordial.datimprint.file.*;
 
 import picocli.CommandLine.*;
@@ -73,8 +74,8 @@ public class DatimprintCli extends BaseCliApplication {
 	/**
 	 * Generates a data imprint of the indicated file or directory tree.
 	 * @param argDataPaths The files or base directories of the data for which an imprint should be generated.
-	 * @param argCharset The charset for text encoding.
 	 * @param argOutput The path to a file in which to store the output.
+	 * @param argOutputCharset The charset for text encoding the output, if output is specified.
 	 * @param argExecutorType The particular type of executor to use, if any.
 	 * @param argExcludePaths The literal paths to exclude, if any.
 	 * @param argExcludePathGlobs The globs of paths to exclude, if any.
@@ -84,10 +85,9 @@ public class DatimprintCli extends BaseCliApplication {
 	@Command(description = "Generates a data imprint of the indicated file or directory tree. The output will use the default console/system encoding unless an output file is specified. The system line separator will be used.", mixinStandardHelpOptions = true)
 	public void generate(
 			@Parameters(paramLabel = "<data>", description = "The file or base directory of the data for which an imprint should be generated. Multiple data sources are allowed.", arity = "1..*") @Nonnull final List<Path> argDataPaths,
-			@Option(names = {"--charset",
-					"-c"}, description = "The charset for text encoding.%nDefaults to UTF-8 if an output file is specified; otherwise uses the console system encoding unless redirected, in which case uses the default system encoding.") final Optional<Charset> argCharset,
 			@Option(names = {"--output",
-					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --charset|@ is specified. The system line separator will be used.") final Optional<Path> argOutput,
+					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --output-charset|@ is specified. The system line separator will be used.") final Optional<Path> argOutput,
+			@Option(names = "--output-charset", description = "The charset for text encoding the output; ignored if no output file indicated.%nDefaults to UTF-8 if an output file is specified; otherwise uses the console encoding.") final Optional<Charset> argOutputCharset,
 			@Option(names = {
 					"--executor"}, description = "Specifies a particular executor to use for multithreading. Valid values: ${COMPLETION-CANDIDATES}") final Optional<PathImprintGenerator.Builder.ExecutorType> argExecutorType,
 			@Option(names = "--exclude-path", description = "One or more literal paths to exclude.") final List<Path> argExcludePaths,
@@ -101,49 +101,37 @@ public class DatimprintCli extends BaseCliApplication {
 
 		final List<Path> dataPaths = argDataPaths.stream().map(throwingFunction(path -> path.toRealPath(NOFOLLOW_LINKS))).collect(toUnmodifiableList());
 		final FileSystem fileSystem = findFirst(dataPaths).orElseThrow(IllegalStateException::new).getFileSystem();
-		final Charset charset = argCharset.orElse(argOutput.map(__ -> UTF_8).orElseGet( //see https://stackoverflow.com/q/72435634
-				() -> Optional.ofNullable(System.console()).map(Console::charset).orElseGet(Charset::defaultCharset)));
+		final Charset outputCharset = argOutputCharset.orElse(UTF_8);
 		final List<Path> excludePaths = argExcludePaths != null ? argExcludePaths : List.of();
 		final List<String> excludePathGlobs = argExcludePathGlobs != null ? argExcludePathGlobs : List.of();
 		final List<String> excludeFilenameGlobs = argExcludeFilenameGlobs != null ? argExcludeFilenameGlobs : List.of();
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
 				.a("Generating imprint for %s ...".formatted(dataPaths.stream().map(path -> "`%s`".formatted(path)).collect(joining(", ")))).reset());
 		final Duration timeElapsed;
-		try (final GenerateStatus status = new GenerateStatus()) {
-			final OutputStream outputStream = argOutput.map(throwingFunction(Files::newOutputStream)).orElse(System.out);
-			try { //manually flush or close the output stream and writer rather than using try-with-resources as the output stream may be System.out
-				final Datim.Serializer datimSerializer = new Datim.Serializer();
-				final Writer writer = new BufferedWriter(new OutputStreamWriter(outputStream, charset));
-				try {
-					datimSerializer.appendHeader(writer);
-					final AtomicLong counter = new AtomicLong(0);
-					final Consumer<PathImprint> imprintConsumer = throwingConsumer(imprint -> datimSerializer.appendImprint(writer, imprint, counter.incrementAndGet()));
-					final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer)
-							.withExcludePaths(excludePaths).withExcludePathGlobs(fileSystem, excludePathGlobs).withExcludeFilenameGlobs(fileSystem, excludeFilenameGlobs);
-					if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
-						imprintGeneratorBuilder.withListener(status);
-					}
-					argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
-					try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
-						for(final Path dataPath : dataPaths) {
-							datimSerializer.appendBasePath(writer, dataPath);
-							imprintGenerator.produceImprintAsync(dataPath).join(); //any errors encountered will be propagated in this synchronous call
-							//At this point the entire tree has been traversed. There may still be imprints being produced (i.e written),
-							//but starting generating and producing imprints for another tree will cause no problem—those imprints will just be added to the queue.
-						}
-					}
-				} finally {
-					if(outputStream == System.out) { //don't close the writer if we are writing to stdout
-						writer.flush();
-					} else {
-						writer.close();
-					}
-				}
-			} finally {
-				//If we are writing to stdout, we didn't close the writer, so flush the output stream (even though it
-				//should have been flushed anyway; see https://stackoverflow.com/a/7166357). 
-				if(outputStream == System.out) {
-					outputStream.flush();
+		try (final GenerateStatus status = new GenerateStatus();
+				final Writer writer = argOutput
+						.<Writer>map(throwingFunction(outputPath -> new BufferedWriter(new OutputStreamWriter(newOutputStream(outputPath), outputCharset))))
+						.orElseGet(() -> new PrintStreamWriter(System.out, false))) {
+			final Datim.Serializer datimSerializer = new Datim.Serializer();
+			datimSerializer.appendHeader(writer);
+			final AtomicLong counter = new AtomicLong(0);
+			final Consumer<PathImprint> imprintConsumer = imprint -> {
+				//suspend the status while writing the imprint if we are sending to stdout
+				final Runnable appendImprint = throwingRunnable(() -> datimSerializer.appendImprint(writer, imprint, counter.incrementAndGet()));
+				argOutput.ifPresentOrElse(__ -> appendImprint.run(), () -> status.supplyWithoutStatusLineAsync(appendImprint));
+			};
+			final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer)
+					.withExcludePaths(excludePaths).withExcludePathGlobs(fileSystem, excludePathGlobs).withExcludeFilenameGlobs(fileSystem, excludeFilenameGlobs);
+			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
+				imprintGeneratorBuilder.withListener(status);
+			}
+			argExecutorType.ifPresent(imprintGeneratorBuilder::withGenerateExecutorType);
+			try (final PathImprintGenerator imprintGenerator = imprintGeneratorBuilder.build()) {
+				for(final Path dataPath : dataPaths) {
+					datimSerializer.appendBasePath(writer, dataPath);
+					imprintGenerator.produceImprintAsync(dataPath).join(); //any errors encountered will be propagated in this synchronous call
+					//At this point the entire tree has been traversed. There may still be imprints being produced (i.e written),
+					//but starting generating and producing imprints for another tree will cause no problem—those imprints will just be added to the queue.
 				}
 			}
 			timeElapsed = status.getElapsedTime();
@@ -162,10 +150,6 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @author Garret Wilson
 	 */
 	private class GenerateStatus extends CliStatus<Path> implements PathImprintGenerator.Listener {
-
-		public GenerateStatus() {
-			super(System.err);
-		}
 
 		@Override
 		public void onGenerateImprint(final Path path) {
@@ -230,14 +214,21 @@ public class DatimprintCli extends BaseCliApplication {
 	 * files in the data directory) will not be checked.
 	 * @param argDataPath The file or base directory of the file(s) to be checked.
 	 * @param argImprintFile The file containing imprints against which to check the data files.
+	 * @param argImprintCharset The charset of the imprints file.
+	 * @param argOutput The path to a file in which to store the output.
+	 * @param argOutputCharset The charset for text encoding the output, if output is specified.
 	 * @throws IOException If an I/O error occurs.
 	 */
-	@Command(description = "Checks the indicated file or files in the indicated directory tree against the data imprints in a file.", mixinStandardHelpOptions = true)
+	@Command(description = "Checks the indicated file or files in the indicated directory tree against the data imprints in a file. The output will use the default console/system encoding unless an output file is specified. The system line separator will be used.", mixinStandardHelpOptions = true)
 	public void check(
 			@Parameters(paramLabel = "<data>", description = "The file or base directory of the file(s) to be checked.", arity = "1..*") @Nonnull final Path argDataPath,
 			@Option(names = {"--imprint",
-					"-i"}, description = "The file containing imprints against which to check the data files.", required = true) final Path argImprintFile)
-			//TODO @Option(names = {"--imprint-charset"}, description = "The charset of the imprints file. If not provided, detected from the any BOM, defaulting to UTF-8.") Optional<Charset> argImprintCharset)
+					"-i"}, description = "The file containing imprints against which to check the data files.", required = true) final Path argImprintFile,
+			@Option(names = {
+					"--imprint-charset"}, description = "The charset of the imprints file. If not provided, detected from the any BOM, defaulting to UTF-8.") Optional<Charset> argImprintCharset,
+			@Option(names = {"--output",
+					"-o"}, description = "The path to a file in which to store the output. UTF-8 will be used as the charset unless @|bold --output-charset|@ is specified. The system line separator will be used.") final Optional<Path> argOutput,
+			@Option(names = "--output-charset", description = "The charset for text encoding the output; ignored if no output file indicated.%nDefaults to UTF-8 if an output file is specified; otherwise uses the console encoding.") final Optional<Charset> argOutputCharset)
 			throws IOException {
 
 		final Logger logger = getLogger();
@@ -245,36 +236,45 @@ public class DatimprintCli extends BaseCliApplication {
 		logAppInfo();
 
 		final Path dataPath = argDataPath.toRealPath(NOFOLLOW_LINKS);
+		final Charset outputCharset = argOutputCharset.orElse(UTF_8);
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(dataPath, argImprintFile)).reset());
 		final Duration timeElapsed;
 		final AtomicReference<Optional<Throwable>> foundErrorReference = new AtomicReference<>(Optional.empty());
-		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile)); final CheckStatus status = new CheckStatus()) {
-			final Consumer<PathChecker.Result> resultConsumer = throwingConsumer(result -> {
+		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile));
+				final CheckStatus status = new CheckStatus();
+				final Writer writer = argOutput
+						.<Writer>map(throwingFunction(outputPath -> new BufferedWriter(new OutputStreamWriter(newOutputStream(outputPath), outputCharset))))
+						.orElseGet(() -> new PrintStreamWriter(System.out, false))) {
+			final Consumer<PathChecker.Result> resultConsumer = result -> {
 				if(!result.isMatch()) {
-					//create the entire report string rather than printing each asynchronously to prevent the lines becoming separated
-					final List<String> report = new ArrayList<>();
-					final String description = result instanceof PathChecker.MissingPathResult
-							? "Missing path `%s` to match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path())
-							: "Path `%s` does not match imprint for path `%s`.".formatted(result.getPath(), result.getImprint().path());
-					report.add("- " + description); //`- error` 
-					//add report detail lines for paths that exist
+					final List<String> reportLines = new ArrayList<>();
+					//- description
+					reportLines.add("- " + (result instanceof PathChecker.MissingPathResult
+							? "Missing path `%s` to match imprint for path `%s`.%n".formatted(result.getPath(), result.getImprint().path())
+							: "Path `%s` does not match imprint for path `%s`.%n".formatted(result.getPath(), result.getImprint().path())));
+					//  * detail(s)
 					if(result instanceof PathChecker.ExistingPathResult existingPathResult) {
 						existingPathResult.getMismatches().stream().sorted(comparingInt(PathChecker.Result.Mismatch::ordinal)) //sort by ordinal to show most severe problems first
 								.map(mismatch -> {
 									return "  * " + switch(mismatch) { //`  * detail`
 										//TODO it would be best not to assume the result type just because there was a content fingerprint mismatch
-										case CONTENT_FINGERPRINT -> "Path content fingerprint `%s` did not match `%s` of the imprint."
+										case CONTENT_FINGERPRINT -> "Path content fingerprint `%s` did not match `%s` of the imprint.%n"
 												.formatted(((PathChecker.FileResult)result).getContentFingerprint(), existingPathResult.getImprint().contentFingerprint());
-										case CONTENT_MODIFIED_AT -> "Path modification timestamp %s did not match %s of the imprint."
+										case CONTENT_MODIFIED_AT -> "Path modification timestamp %s did not match %s of the imprint.%n"
 												.formatted(existingPathResult.getContentModifiedAt(), existingPathResult.getImprint().contentModifiedAt());
-										case FILENAME -> "Path filename `%s` did not match `%s` of the imprint.".formatted(findFilename(existingPathResult.getPath()).orElse(""),
+										case FILENAME -> "Path filename `%s` did not match `%s` of the imprint.%n".formatted(findFilename(existingPathResult.getPath()).orElse(""),
 												findFilename(existingPathResult.getImprint().path()).orElse(""));
 									};
-								}).forEachOrdered(report::add);
+								}).forEachOrdered(reportLines::add);
 					}
-					status.printLinesAsync(report); //print a report in addition to the status notification TODO add option to send to System.out or save in a file
+					//suspend the status while adding to the report if we are sending to stdout
+					final Runnable appendReport = throwingRunnable(() -> {
+						reportLines.forEach(throwingConsumer(writer::append));
+						writer.flush(); //it will be useful for the user to get the information sooner, and normally the report should be significantly smaller that the data being checked
+					});
+					argOutput.ifPresentOrElse(__ -> appendReport.run(), () -> status.supplyWithoutStatusLineAsync(appendReport));
 				}
-			});
+			};
 			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder().withResultConsumer(resultConsumer);
 			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 				pathCheckerBuilder.withListener(status);
@@ -282,7 +282,8 @@ public class DatimprintCli extends BaseCliApplication {
 			Optional<CompletableFuture<PathChecker.Result>> foundFutureResult = Optional.empty();
 			final AtomicLong imprintCount = new AtomicLong(0);
 			try (final PathChecker pathChecker = pathCheckerBuilder.build()) {
-				final Datim.Parser parser = new Datim.Parser(inputStream);
+				final Datim.Parser parser = argImprintCharset.map(imprintCharset -> new Datim.Parser(new InputStreamReader(inputStream, imprintCharset)))
+						.orElseGet(throwingSupplier(() -> new Datim.Parser(inputStream)));
 				Optional<PathImprint> foundImprint;
 				do {
 					final Optional<CompletableFuture<PathChecker.Result>> lastFoundFutureResult = foundFutureResult;
@@ -327,10 +328,6 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @author Garret Wilson
 	 */
 	private class CheckStatus extends CliStatus<Path> implements PathChecker.Listener {
-
-		public CheckStatus() {
-			super(System.err);
-		}
 
 		@Override
 		public void onCheckPath(final Path path, final PathImprint imprint) {
