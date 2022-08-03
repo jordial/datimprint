@@ -166,8 +166,8 @@ public class DatimprintCli extends BaseCliApplication {
 		/**
 		 * {@inheritDoc}
 		 * @implSpec This implementation prints a warning for all unreadable paths unless the hidden and system attributes are both set. This prevents unnecessary
-		 *           warnings for paths expected to throw {@link AccessDeniedException} errors such as <code>System Volume Information</code> and
-		 *           <code>$RECYCLE.BIN</code> on Windows file systems.
+		 *           warnings for paths expected to throw {@link AccessDeniedException} errors such as <code>System Volume Information</code> on Windows file
+		 *           systems if access were attempted.
 		 * @implNote The approach used in this method to detect hidden directories only works from Java 13 onwards because of bug
 		 *           <a href="https://bugs.openjdk.org/browse/JDK-8215467">JDK-8215467</a>.
 		 */
