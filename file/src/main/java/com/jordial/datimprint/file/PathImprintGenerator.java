@@ -57,6 +57,9 @@ import io.clogr.Clogged;
  *           will only be reported when it is eventually thrown during {@link #close()}.
  * @implNote This implementation assumes that requested paths exist, and will throw a {@link FileNotFoundException} if not. Thus this class cannot reliably be
  *           used on a file tree which has files and directories being removed dynamically.
+ * @implNote This implementation ignores any child <em>directories</em> that are hidden and marked as DOS "system" directories, primarily in order to exclude
+ *           <code>$RECYCLE.BIN</code> on Windows file systems. However <em>files</em> marked as hidden and DOS "system" files are not skipped unless they are
+ *           unreadable.
  * @author Garret Wilson
  */
 public class PathImprintGenerator implements Closeable, Clogged {
@@ -331,6 +334,12 @@ public class PathImprintGenerator implements Closeable, Clogged {
 	 * @implSpec This implementation uses the executor returned by {@link #getGenerateExecutor()} for traversal.
 	 * @implSpec This implementation delegates to {@link #produceImprintAsync(Path)} to produce each child imprint.
 	 * @implSpec This implementation ignores any configured exclude paths and/or globs determined by calling {@link #isExcludedPath(Path)}.
+	 * @implSpec Any child directories that are hidden and marked as DOS "system" directories are ignored. This would prevent an {@link AccessDeniedException}
+	 *           when trying to access the Windows <code>System Volume Information</code> directory, but this directory should already be skipped because it is
+	 *           unreadable. More importantly this will ignore <code>$RECYCLE.BIN</code> on the Windows file systems. Note that hidden+system <em>files</em> are
+	 *           not ignored unless they are unreadable.
+	 * @implNote The approach used in this method to detect hidden directories only works from Java 13 onwards because of bug
+	 *           <a href="https://bugs.openjdk.org/browse/JDK-8215467">JDK-8215467</a>.
 	 * @param directory The path for which an imprint should be produced.
 	 * @return A map of all future imprints for each child mapped to the path of each child.
 	 * @throws IOException if there is a problem traversing the directory or reading file contents.
@@ -351,7 +360,17 @@ public class PathImprintGenerator implements Closeable, Clogged {
 						return false;
 					}
 					return true;
-				}).collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
+				}).filter(throwingPredicate(childPath -> { //completely ignore DOS hidden+system directories
+					if(isDirectory(childPath) && isHidden(childPath)) { //isHidden() only works for directories from Java 13 onwards; see JDK-8215467
+						try {
+							final DosFileAttributes dosFileAttributes = readAttributes(childPath, DosFileAttributes.class);
+							return !dosFileAttributes.isSystem(); //only hidden+system directories are ignored
+						} catch(final UnsupportedOperationException unsupportedOperationException) {
+							//not an error condition; simply don't filter out the hidden directory if it isn't on a DOS file system
+						}
+					}
+					return true;
+				})).collect(toUnmodifiableMap(identity(), throwingFunction(this::produceImprintAsync)));
 			}
 		}), getGenerateExecutor());
 	}
