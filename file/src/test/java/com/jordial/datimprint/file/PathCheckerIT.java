@@ -20,7 +20,7 @@ import static com.jordial.datimprint.file.PathImprintGenerator.FINGERPRINT_ALGOR
 import static java.nio.file.Files.*;
 import static org.hamcrest.MatcherAssert.*;
 import static org.hamcrest.Matchers.*;
-import static org.junit.Assume.*;
+import static org.junit.jupiter.api.Assumptions.*;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -185,8 +185,8 @@ public class PathCheckerIT {
 	@EnabledOnOs(value = OS.WINDOWS, disabledReason = "Non-Windows systems use case-sensitive file systems.")
 	void testFileResultFilenameMismatch(@TempDir final Path tempDir) throws IOException {
 		final Path file = writeString(tempDir.resolve("foo.bar"), "foobar");
-		assumeThat("In addition to Windows OS we require DOS file attributes as one proxy for determining if the file system is case-insensitive.",
-				readAttributes(file, BasicFileAttributes.class), isA(DosFileAttributes.class));
+		assumeTrue(readAttributes(file, BasicFileAttributes.class) instanceof DosFileAttributes,
+				"In addition to Windows OS we require DOS file attributes as one proxy for determining if the file system is case-insensitive.");
 		final FileTime manualLastModifiedTime = FileTime.from(Instant.now());
 		setLastModifiedTime(file, manualLastModifiedTime); //manually set before and after to ensure the same value without regard to e.g. nanoseconds
 		final PathImprint imprint = fixtureImprintGenerator.generateImprintAsync(file).join();
@@ -245,8 +245,8 @@ public class PathCheckerIT {
 	void verifyDirectoryResultMatchesWhenFilenameMissing(@TempDir final Path tempDir) throws IOException {
 		final Path directory = createDirectory(tempDir.resolve("dir"));
 		final Path root = directory.getRoot();
-		assumeThat("The root path does not have a filename (the simplest, most cross-platform compatible approach to attempt to get a path with no filename).",
-				root.getFileName(), is(nullValue()));
+		assumeTrue(root.getFileName() == null,
+				"The root path does not have a filename (the simplest, most cross-platform compatible approach to attempt to get a path with no filename).");
 		final PathImprint noFilenameDirectoryImprint = PathImprint.forDirectory(root, getLastModifiedTime(directory), FINGERPRINT_ALGORITHM.emptyHash(),
 				FINGERPRINT_ALGORITHM.emptyHash(), FINGERPRINT_ALGORITHM);
 		final DirectoryResult directoryResult = testPathChecker.new DirectoryResult(directory, noFilenameDirectoryImprint);
