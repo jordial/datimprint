@@ -21,7 +21,7 @@ import static java.nio.file.Files.*;
 import static java.util.stream.Collectors.*;
 import static org.hamcrest.MatcherAssert.*;
 import static org.hamcrest.Matchers.*;
-import static org.junit.Assume.*;
+import static org.junit.jupiter.api.Assumptions.*;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -354,8 +354,8 @@ public class PathImprintGeneratorIT {
 	@EnabledOnOs(value = OS.WINDOWS, disabledReason = "Setting paths to be non-readable via ACL file attribute view has only been tested on Windows.")
 	void verifyProduceChildImprintsAsyncSkipsUnreadableFiles(@TempDir final Path tempDir) throws IOException {
 		final Path directory = createDirectory(tempDir.resolve("dir"));
-		assumeThat("We assume that on Windows the file system uses DOS attributes; otherwise this test will not work.",
-				getFileAttributeView(directory, AclFileAttributeView.class), is(not(nullValue())));
+		assumeTrue(getFileAttributeView(directory, AclFileAttributeView.class) != null,
+				"We assume that on Windows the file system uses DOS attributes; otherwise this test will not work.");
 
 		final Path fooFile = writeString(directory.resolve("foo.txt"), "foo");
 		final Path unreadableFile = writeString(directory.resolve("locked.txt"), "locked");
@@ -370,8 +370,8 @@ public class PathImprintGeneratorIT {
 	@EnabledOnOs(value = OS.WINDOWS, disabledReason = "Working with DOS system directories should only be done on Windows.")
 	void verifyProduceChildImprintsAsyncIgnoresDosHiddenSystemDirectories(@TempDir final Path tempDir) throws IOException {
 		final Path directory = createDirectory(tempDir.resolve("dir"));
-		assumeThat("We assume that on Windows the file system uses DOS attributes; otherwise this test will not work.",
-				readAttributes(directory, BasicFileAttributes.class), isA(DosFileAttributes.class));
+		assumeTrue(readAttributes(directory, BasicFileAttributes.class) instanceof DosFileAttributes,
+				"We assume that on Windows the file system uses DOS attributes; otherwise this test will not work.");
 
 		final Path fooFile = writeString(directory.resolve("foo.txt"), "foo");
 		final Path hiddenFile = writeString(directory.resolve("hidden.txt"), "hidden");
