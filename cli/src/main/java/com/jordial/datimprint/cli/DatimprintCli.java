@@ -22,6 +22,7 @@ import static java.nio.charset.StandardCharsets.*;
 import static java.nio.file.Files.*;
 import static java.nio.file.LinkOption.*;
 import static java.util.Comparator.*;
+import static java.util.Objects.*;
 import static java.util.stream.Collectors.*;
 import static org.fusesource.jansi.Ansi.*;
 import static org.zalando.fauxpas.FauxPas.*;
@@ -32,6 +33,7 @@ import java.nio.file.*;
 import java.nio.file.attribute.DosFileAttributes;
 import java.time.Duration;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.*;
@@ -107,6 +109,7 @@ public class DatimprintCli extends BaseCliApplication {
 		final List<String> excludeFilenameGlobs = argExcludeFilenameGlobs != null ? argExcludeFilenameGlobs : List.of();
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
 				.a("Generating imprint for %s ...".formatted(dataPaths.stream().map(path -> "`%s`".formatted(path)).collect(joining(", ")))).reset());
+		final PathSummerizer<PathImprint> pathSummerizer = new PathSummerizer<>(PathImprint::path);
 		final Duration timeElapsed;
 		try (final GenerateStatus status = new GenerateStatus();
 				final Writer writer = argOutput
@@ -120,7 +123,7 @@ public class DatimprintCli extends BaseCliApplication {
 				final Runnable appendImprint = throwingRunnable(() -> datimSerializer.appendImprint(writer, imprint, counter.incrementAndGet()));
 				argOutput.ifPresentOrElse(__ -> appendImprint.run(), () -> status.supplyWithoutStatusLineAsync(appendImprint));
 			};
-			final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer)
+			final PathImprintGenerator.Builder imprintGeneratorBuilder = PathImprintGenerator.builder().withImprintConsumer(imprintConsumer.andThen(pathSummerizer))
 					.withExcludePaths(excludePaths).withExcludePathGlobs(fileSystem, excludePathGlobs).withExcludeFilenameGlobs(fileSystem, excludeFilenameGlobs);
 			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 				imprintGeneratorBuilder.withListener(status);
@@ -137,7 +140,9 @@ public class DatimprintCli extends BaseCliApplication {
 			timeElapsed = status.getElapsedTime();
 		}
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
-				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(timeElapsed.toHours(), timeElapsed.toMinutesPart(), timeElapsed.toSecondsPart())).reset());
+				.a("Done. Produced imprints for %d paths (%d files; %d directories). Elapsed time: %d:%02d:%02d.".formatted(pathSummerizer.getTotalPathCount(),
+						pathSummerizer.getFileCount(), pathSummerizer.getDirectoryCount(), timeElapsed.toHours(), timeElapsed.toMinutesPart(), timeElapsed.toSecondsPart()))
+				.reset());
 	}
 
 	/**
@@ -239,6 +244,7 @@ public class DatimprintCli extends BaseCliApplication {
 		final Charset outputCharset = argOutputCharset.orElse(UTF_8);
 		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE).a("Checking `%s` against imprint `%s` ...".formatted(dataPath, argImprintFile)).reset());
 		final Duration timeElapsed;
+		final PathSummerizer<PathChecker.Result> pathSummerizer = new PathSummerizer<>(PathChecker.Result::getPath);
 		final AtomicReference<Optional<Throwable>> foundErrorReference = new AtomicReference<>(Optional.empty());
 		try (final InputStream inputStream = new BufferedInputStream(newInputStream(argImprintFile));
 				final CheckStatus status = new CheckStatus();
@@ -275,7 +281,7 @@ public class DatimprintCli extends BaseCliApplication {
 					argOutput.ifPresentOrElse(__ -> appendReport.run(), () -> status.supplyWithoutStatusLineAsync(appendReport));
 				}
 			};
-			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder().withResultConsumer(resultConsumer);
+			final PathChecker.Builder pathCheckerBuilder = PathChecker.builder().withResultConsumer(resultConsumer.andThen(pathSummerizer));
 			if(!isQuiet()) { //if we're in quiet mode, don't even bother with listening and printing a status
 				pathCheckerBuilder.withListener(status);
 			}
@@ -314,8 +320,12 @@ public class DatimprintCli extends BaseCliApplication {
 			}
 			timeElapsed = status.getElapsedTime();
 		}
-		logger.info("{}", ansi().bold().fg(Ansi.Color.BLUE)
-				.a("Done. Elapsed time: %d:%02d:%02d.".formatted(timeElapsed.toHours(), timeElapsed.toMinutesPart(), timeElapsed.toSecondsPart())).reset());
+		logger.info("{}",
+				ansi().bold().fg(Ansi.Color.BLUE)
+						.a("Done. Checked %d paths (%d files; %d directories; %d missing). Elapsed time: %d:%02d:%02d.".formatted(pathSummerizer.getTotalPathCount(),
+								pathSummerizer.getFileCount(), pathSummerizer.getDirectoryCount(), pathSummerizer.getMissingPathCount(), timeElapsed.toHours(),
+								timeElapsed.toMinutesPart(), timeElapsed.toSecondsPart()))
+						.reset());
 	}
 
 	/**
@@ -353,6 +363,68 @@ public class DatimprintCli extends BaseCliApplication {
 			final String notificationText = result instanceof PathChecker.MissingPathResult ? "Missing path `%s` for imprint.".formatted(pathLabel)
 					: "Path `%s` does not match imprint.".formatted(pathLabel);
 			setNotificationAsync(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
+		}
+
+	}
+
+	/**
+	 * Consumer that summarizes path information of the input being consumed.
+	 * @param <T> The type the consumer accepts.
+	 * @author Garret Wilson
+	 */
+	private static class PathSummerizer<T> implements Consumer<T> {
+
+		private final Function<? super T, ? extends Path> pathExtractor;
+
+		/**
+		 * Path extractor constructor.
+		 * @param pathExtractor The function for extracting the path to summarize from the input.
+		 */
+		public PathSummerizer(@Nonnull final Function<? super T, ? extends Path> pathExtractor) {
+			this.pathExtractor = requireNonNull(pathExtractor);
+		}
+
+		private AtomicLong totalPathCount = new AtomicLong();
+
+		/** @return The number of paths counted. */
+		public long getTotalPathCount() {
+			return totalPathCount.get();
+		}
+
+		private AtomicLong missingPathCount = new AtomicLong();
+
+		/** @return The number of missing paths counted. */
+		public long getMissingPathCount() {
+			return missingPathCount.get();
+		}
+
+		private AtomicLong fileCount = new AtomicLong();
+
+		/** @return The number of files counted. */
+		public long getFileCount() {
+			return fileCount.get();
+		}
+
+		private AtomicLong directoryCount = new AtomicLong();
+
+		/** @return The number of directories counted. */
+		public long getDirectoryCount() {
+			return directoryCount.get();
+		}
+
+		@Override
+		public void accept(@Nonnull final T input) {
+			final Path path = pathExtractor.apply(input);
+			totalPathCount.incrementAndGet();
+			if(isRegularFile(path)) {
+				fileCount.incrementAndGet();
+			} else if(isDirectory(path)) {
+				directoryCount.incrementAndGet();
+			} else if(!exists(path)) {
+				missingPathCount.incrementAndGet();
+			} else {
+				throw new UnsupportedOperationException("Unsupported path `%s` is neither a regular file or a directory.".formatted(path));
+			}
 		}
 
 	}
