@@ -15,6 +15,7 @@
 
 	<properties>
 		<exe.main.class>com.jordial.datimprint.cli.DatimprintCli</exe.main.class>
+		<exe.filename>datimprint.exe</exe.filename>
 	</properties>
 
 	<dependencies>
@@ -75,6 +76,17 @@
 				<executions>
 					<execution>
 						<id>generate-exe-jar</id>
+						<phase>package</phase>
+					</execution>
+				</executions>
+			</plugin>
+
+			<plugin>
+				<groupId>com.akathist.maven.plugins.launch4j</groupId>
+				<artifactId>launch4j-maven-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>generate-exe</id>
 						<phase>package</phase>
 					</execution>
 				</executions>
