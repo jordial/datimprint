@@ -15,7 +15,7 @@
 
 	<properties>
 		<exe.main.class>com.jordial.datimprint.cli.DatimprintCli</exe.main.class>
-		<exe.filename>datimprint.exe</exe.filename>
+		<exe.base.filename>datimprint</exe.base.filename>
 	</properties>
 
 	<dependencies>
@@ -45,34 +45,8 @@
 
 		<plugins>
 			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-resources-plugin</artifactId>
-				<executions>
-					<execution>
-						<id>copy-bin</id>
-						<phase>process-resources</phase>
-					</execution>
-				</executions>
-			</plugin>
-
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-antrun-plugin</artifactId>
-				<executions>
-					<execution>
-						<id>set-shell-scripts-executable</id>
-						<phase>process-resources</phase>
-					</execution>
-					<execution>
-						<id>remove-shell-script-extensions</id>
-						<phase>process-resources</phase>
-					</execution>
-				</executions>
-			</plugin>
-
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-shade-plugin</artifactId>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
 				<executions>
 					<execution>
 						<id>generate-exe-jar</id>
@@ -87,6 +61,17 @@
 				<executions>
 					<execution>
 						<id>generate-exe</id>
+						<phase>package</phase>
+					</execution>
+				</executions>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-antrun-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>copy-exe-jar-as-script</id>
 						<phase>package</phase>
 					</execution>
 				</executions>
