@@ -156,6 +156,11 @@ public class DatimprintCli extends BaseCliApplication {
 	 */
 	private class GenerateStatus extends CliStatus<Path> implements PathImprintGenerator.Listener {
 
+		/** Constructor setting the status width to that of the terminal. */
+		public GenerateStatus() {
+			super(getTerminalWidth());
+		}
+
 		@Override
 		public void onGenerateImprint(final Path path) {
 			incrementCount();
@@ -339,6 +344,11 @@ public class DatimprintCli extends BaseCliApplication {
 	 */
 	private class CheckStatus extends CliStatus<Path> implements PathChecker.Listener {
 
+		/** Constructor setting the status width to that of the terminal. */
+		public CheckStatus() {
+			super(getTerminalWidth());
+		}
+
 		@Override
 		public void onCheckPath(final Path path, final PathImprint imprint) {
 			if(isVerbose() && isDirectory(path)) {
@@ -359,10 +369,9 @@ public class DatimprintCli extends BaseCliApplication {
 
 		@Override
 		public void onResultMismatch(final PathChecker.Result result) {
-			final CharSequence pathLabel = constrainLabelLength(result.getPath().toString(), WORK_MAX_LABEL_LENGTH);
-			final String notificationText = result instanceof PathChecker.MissingPathResult ? "Missing path `%s` for imprint.".formatted(pathLabel)
-					: "Path `%s` does not match imprint.".formatted(pathLabel);
-			setNotificationAsync(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
+			final String messageFormat = result instanceof PathChecker.MissingPathResult ? "Missing path `%s` for imprint." : "Path `%s` does not match imprint.";
+			final CharSequence pathLabel = constrainLabelLength(result.getPath().toString(), getMaxWorkLabelLength() - (messageFormat.length() - 2)); //allow for replacement pattern
+			setNotificationAsync(Level.ERROR, messageFormat.formatted(pathLabel)); //TODO use Level.WARN for directory modification timestamps
 		}
 
 	}
