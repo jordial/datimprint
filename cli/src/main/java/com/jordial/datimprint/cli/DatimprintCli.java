@@ -18,6 +18,7 @@ package com.jordial.datimprint.cli;
 
 import static com.globalmentor.collections.iterables.Iterables.*;
 import static com.globalmentor.io.Paths.*;
+import static com.globalmentor.java.CharSequences.*;
 import static java.nio.charset.StandardCharsets.*;
 import static java.nio.file.Files.*;
 import static java.nio.file.LinkOption.*;
@@ -359,10 +360,10 @@ public class DatimprintCli extends BaseCliApplication {
 
 		@Override
 		public void onResultMismatch(final PathChecker.Result result) {
-			final CharSequence pathLabel = constrainLabelLength(result.getPath().toString(), WORK_MAX_LABEL_LENGTH);
-			final String notificationText = result instanceof PathChecker.MissingPathResult ? "Missing path `%s` for imprint.".formatted(pathLabel)
-					: "Path `%s` does not match imprint.".formatted(pathLabel);
-			setNotificationAsync(Level.ERROR, notificationText); //TODO use Level.WARN for directory modification timestamps
+			final String messageFormat = result instanceof PathChecker.MissingPathResult ? "Missing path `%s` for imprint." : "Path `%s` does not match imprint.";
+			final CharSequence pathLabel = constrain(result.getPath().toString(), getMaxWorkLabelLength() - (messageFormat.length() - 2), //allow for format replacement pattern
+					CONSTRAIN_TRUNCATE_MIDDLE, "...");
+			setNotificationAsync(Level.ERROR, messageFormat.formatted(pathLabel)); //TODO use Level.WARN for directory modification timestamps
 		}
 
 	}
