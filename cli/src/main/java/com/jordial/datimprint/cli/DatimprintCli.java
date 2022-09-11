@@ -18,6 +18,7 @@ package com.jordial.datimprint.cli;
 
 import static com.globalmentor.collections.iterables.Iterables.*;
 import static com.globalmentor.io.Paths.*;
+import static com.globalmentor.java.CharSequences.*;
 import static java.nio.charset.StandardCharsets.*;
 import static java.nio.file.Files.*;
 import static java.nio.file.LinkOption.*;
@@ -155,11 +156,6 @@ public class DatimprintCli extends BaseCliApplication {
 	 * @author Garret Wilson
 	 */
 	private class GenerateStatus extends CliStatus<Path> implements PathImprintGenerator.Listener {
-
-		/** Constructor setting the status width to that of the terminal. */
-		public GenerateStatus() {
-			super(getTerminalWidth());
-		}
 
 		@Override
 		public void onGenerateImprint(final Path path) {
@@ -344,11 +340,6 @@ public class DatimprintCli extends BaseCliApplication {
 	 */
 	private class CheckStatus extends CliStatus<Path> implements PathChecker.Listener {
 
-		/** Constructor setting the status width to that of the terminal. */
-		public CheckStatus() {
-			super(getTerminalWidth());
-		}
-
 		@Override
 		public void onCheckPath(final Path path, final PathImprint imprint) {
 			if(isVerbose() && isDirectory(path)) {
@@ -370,7 +361,8 @@ public class DatimprintCli extends BaseCliApplication {
 		@Override
 		public void onResultMismatch(final PathChecker.Result result) {
 			final String messageFormat = result instanceof PathChecker.MissingPathResult ? "Missing path `%s` for imprint." : "Path `%s` does not match imprint.";
-			final CharSequence pathLabel = constrainLabelLength(result.getPath().toString(), getMaxWorkLabelLength() - (messageFormat.length() - 2)); //allow for replacement pattern
+			final CharSequence pathLabel = constrain(result.getPath().toString(), getMaxWorkLabelLength() - (messageFormat.length() - 2), //allow for format replacement pattern
+					CONSTRAIN_TRUNCATE_MIDDLE, "...");
 			setNotificationAsync(Level.ERROR, messageFormat.formatted(pathLabel)); //TODO use Level.WARN for directory modification timestamps
 		}
 

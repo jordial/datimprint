@@ -174,7 +174,7 @@ public class DatimTest {
 		when(mockFilePath.toString()).thenReturn("/" + filename);
 		when(mockFileNamePath.toString()).thenReturn(filename);
 		when(mockFilePath.getFileName()).thenReturn(mockFileNamePath);
-		assertThat(new Datim.Serializer("\n").appendBasePath(new StringBuilder(), mockFilePath).toString(), is("/\t\t/foo.bar\t\t\t\n"));
+		assertThat(new Datim.Serializer("\n").appendBasePath(new StringBuilder(), mockFilePath), hasToString("/\t\t/foo.bar\t\t\t\n"));
 	}
 
 	/** @see Datim.Serializer#appendImprint(Appendable, PathImprint, long) */
@@ -190,7 +190,7 @@ public class DatimTest {
 		final FileTime modifiedAt = FileTime.from(Instant.ofEpochSecond(1653252496, 751214600));
 		final Hash contentFingerprint = FINGERPRINT_ALGORITHM.hash("foobar");
 		final PathImprint imprint = PathImprint.forFile(mockFilePath, modifiedAt, contentFingerprint, FINGERPRINT_ALGORITHM);
-		assertThat(new Datim.Serializer("\n").appendImprint(new StringBuilder(), imprint, 0x0123456789ABCDEFL).toString(), is(
+		assertThat(new Datim.Serializer("\n").appendImprint(new StringBuilder(), imprint, 0x0123456789ABCDEFL), hasToString(
 				"81985529216486895\tc56f2ad0\t/foo.bar\t2022-05-22T20:48:16.7512146Z\tc3ab8ff13720e8ad9047dd39466b3c8974e592c2fa383d4a3960714caef0c4f2\tc56f2ad0a6e082790805ffabf1f68f13f77954ae6936ab1793edde7e101864c9\n"));
 	}
 
