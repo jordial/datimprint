@@ -6,6 +6,7 @@
 		<groupId>com.globalmentor</groupId>
 		<artifactId>globalmentor-root</artifactId>
 		<version>0.8.14</version>
+		<relativePath />
 	</parent>
 
 	<groupId>com.jordial.datimprint</groupId>
