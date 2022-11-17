@@ -59,7 +59,7 @@
 			<dependency>
 				<groupId>com.globalmentor</groupId>
 				<artifactId>globalmentor-application</artifactId>
-				<version>0.7.8</version>
+				<version>0.7.9</version>
 			</dependency>
 
 			<dependency>
