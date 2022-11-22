@@ -2,7 +2,7 @@
 
 Jordial's Datimprint™ software for data statistics, fingerprint, and verification.
 
-Visit the [Daimprint home page](https://www.jordial.com/software/datimprint/) for more detailed information and documentation. The source code is publicly available via the [GitHub project](https://github.com/jordial/datimprint), where you can report [issues](https://github.com/jordial/datimprint/issues) or participate in [discussions](https://github.com/jordial/datimprint/discussions) about the program.
+Visit the [Datimprint home page](https://www.jordial.com/software/datimprint/) for more detailed information and documentation. The source code is publicly available via the [GitHub project](https://github.com/jordial/datimprint), where you can report [issues](https://github.com/jordial/datimprint/issues) or participate in [discussions](https://github.com/jordial/datimprint/discussions) about the program.
 
 ## Overview
 
